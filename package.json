@@ -1,7 +1,7 @@
 {
   "name": "commons-dj-nogate",
   "productName": "Commons DJ NoGate",
-  "version": "0.1.0",
+  "version": "0.3.0-beta",
   "description": "A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp built in.",
   "main": "src/main.js",
   "license": "MIT",
@@ -16,5 +16,8 @@
   "devDependencies": {
     "@electron/packager": "^19.0.0",
     "electron": "^44.9.1"
+  },
+  "dependencies": {
+    "onnxruntime-node": "^1.30.0"
   }
 }

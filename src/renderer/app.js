@@ -1,5 +1,6 @@
 // Commons DJ — UI
 import { Mixer, peakDb, STEMS, AI_STEM_NAMES } from './engine.js';
+import { SOUNDS } from './sfx.js';
 import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey } from './analysis.js';
 
 const api = window.cdj;
@@ -7,6 +8,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const mixer = new Mixer();
+window.cdjDebug = { mixer }; // for tests and the devtools console
 const DECKS = ['A', 'B'];
 // Canvas colours. ACCENT matches --a / --b and shade matches --bg in styles.css.
 const ACCENT = { A: [255, 138, 61], B: [66, 182, 255] };
@@ -46,7 +48,10 @@ function toast(message, kind = 'info') {
   el.className = `toast ${kind === 'error' ? 'error' : ''}`;
   el.textContent = message;
   $('#toasts').append(el);
-  setTimeout(() => el.remove(), kind === 'error' ? 6000 : 3200);
+  setTimeout(() => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 200);
+  }, kind === 'error' ? 6000 : 3200);
 }
 
 // No-gate build: tracks aren't license-checked, so anything that isn't
@@ -192,6 +197,7 @@ function buildDeck(name) {
     play: $('.play', root),
     cue: $('.cue', root),
     sync: $('.sync', root),
+    drop: $('.drop', root),
     tempo: $('.tempo-slider', root),
     range: $('.tempo-range', root),
     hotcues: $$('.hc', root),
@@ -203,6 +209,7 @@ function buildDeck(name) {
     stems: $$('.stem', root),
     stemLabel: $('.stemrow .label', root),
     meter: $('.meter', root),
+    badge: $('.deck-badge', root),
     barpos: $('.barpos', root),
     vinyl: $('.vinyl', root),
   };
@@ -215,6 +222,7 @@ function buildDeck(name) {
   });
   d.cue.addEventListener('click', () => deck.cue());
   d.sync.addEventListener('click', () => doSync(name));
+  d.drop.addEventListener('click', () => toggleDrop(name));
 
   const applyTempo = () => {
     const pct = (Number(d.tempo.value) / 1000) * Number(d.range.value);
@@ -297,9 +305,18 @@ function buildDeck(name) {
 
   deck.on((type) => {
     if (type === 'state' || type === 'load') renderDeckState(name);
+    if (type === 'load') {
+      root.classList.remove('just-loaded');
+      void root.offsetWidth; // restart the animation
+      root.classList.add('just-loaded');
+    }
     if (type === 'loop' || type === 'load') d.loops.forEach((b) => b.classList.toggle('on', deck.loop?.beats === Number(b.dataset.beats)));
     if (type === 'rate' || type === 'load' || type === 'sync') renderTempo(name);
     if (type === 'sync') syncTempoSlider(name);
+    if (type === 'drop') {
+      d.drop.classList.toggle('on', !!deck.drop);
+      d.drop.classList.toggle('cancelling', !!deck.drop?.cancelling);
+    }
     if (type === 'key' || type === 'rate' || type === 'load' || type === 'sync' || type === 'fx') renderKey(name);
     if (type === 'stems' || type === 'load' || type === 'fx') renderStems(name);
   });
@@ -358,6 +375,53 @@ function syncTempoSlider(name) {
     d.range.value = String(range);
   }
   d.tempo.value = Math.round((pct / range) * 1000);
+}
+
+// ------------------------------------------------------------------ SFX pads
+
+/** The deck the crowd is hearing most: playing, and favoured by the crossfader. */
+function leadDeck() {
+  const playing = DECKS.filter((n) => mixer.decks[n].playing && mixer.decks[n].bars);
+  if (playing.length < 2) return playing[0] ? mixer.decks[playing[0]] : null;
+  return mixer.decks[mixer.crossfader > 0.5 ? 'B' : 'A'];
+}
+
+function playSfx(sound, pad) {
+  mixer.resume();
+  const ctx = mixer.ctx;
+  const deck = leadDeck();
+  const beat = deck ? 60 / deck.effectiveBpm : 0.5;
+  let t = ctx.currentTime + 0.01;
+  if (deck && $('#sfxQuantize').checked) {
+    // Next beat of the lead deck, on the audio clock.
+    const p = deck.position;
+    const off = deck.track.beatOffset;
+    const period = 60 / deck.bpm;
+    const next = off + Math.ceil((p - off) / period + 0.02) * period;
+    t = ctx.currentTime + (next - p) / deck.rate;
+  }
+  sound.play(ctx, mixer.sfx, t, beat);
+  pad.classList.remove('hit');
+  setTimeout(() => {
+    void pad.offsetWidth;
+    pad.classList.add('hit');
+  }, Math.max(0, (t - ctx.currentTime) * 1000));
+}
+
+function setupSfx() {
+  $('#sfxGrid').innerHTML = SOUNDS.map((s, i) => `<button class="sfx-pad" data-i="${i}">${escapeHtml(s.label)}</button>`).join('');
+  $('#sfxGrid').addEventListener('pointerdown', (e) => {
+    const pad = e.target.closest('.sfx-pad');
+    if (pad) playSfx(SOUNDS[pad.dataset.i], pad);
+  });
+  $('#sfxLevel').addEventListener('input', (e) => mixer.sfx.gain.setTargetAtTime(Number(e.target.value), mixer.ctx.currentTime, 0.01));
+}
+
+function toggleDrop(name) {
+  const deck = mixer.decks[name];
+  if (deck.drop) return deck.cancelDrop();
+  if (!deck.playing) return toast(`Play deck ${name} first — the drop builds on the playing track.`);
+  if (!deck.startDrop()) toast(`Deck ${name} needs a beat grid for Drop (try TAP).`);
 }
 
 function doSync(name) {
@@ -943,6 +1007,11 @@ function frame() {
       // 33⅓ rpm: one turn of the record is 1.8 s of track, so it spins with the tempo.
       d.vinyl.style.transform = `rotate(${((pos / SECONDS_PER_TURN) % 1) * 360}deg)`;
       const bars = deck.bars;
+      const pulse = deck.playing && bars ? (1 - (((pos - bars.downbeat) / (60 / deck.bpm)) % 1 + 1) % 1) ** 3 : 0;
+      // Only the badge and BPM readout get the pulse: a style on the whole deck restyles it every frame.
+      d.badge.style.setProperty('--pulse', pulse.toFixed(2));
+      d.bpmEff.style.setProperty('--pulse', pulse.toFixed(2));
+      if (deck.drop) d.drop.style.setProperty('--pulse', pulse.toFixed(2));
       if (bars) {
         const beats = Math.floor((pos - bars.downbeat) / (60 / deck.bpm) + 1e-6);
         const n = bars.beatsPerBar;
@@ -1368,6 +1437,50 @@ async function setupYtdlpChip() {
   refresh();
 }
 
+// AI stems: one click downloads the separation model; after that every track
+// is separated once in the background and the stem buttons switch to it.
+async function setupAiChip() {
+  const chip = $('#aiChip');
+  const render = async () => {
+    const s = await api.stems.setup();
+    chip.hidden = !s.runtime;
+    if (s.model) {
+      chip.className = 'chip ok';
+      chip.textContent = `AI stems${s.provider === 'cuda' || s.provider === 'dml' ? ' · GPU' : s.provider === 'cpu' ? ' · CPU' : ''}`;
+      chip.title = s.gpuModel
+        ? `Studio-grade AI stems on your graphics card: ${s.gpuModel}. Each track is separated once, in the background, then cached.`
+        : 'Clean AI stem separation is on. Each track is separated once, in the background, then cached.';
+    } else if (!s.downloading) {
+      chip.className = 'chip warn';
+      chip.textContent = 'Get AI stems';
+      chip.title = 'Download the HT-Demucs separation model (158 MB, from Hugging Face) for much cleaner vocals / drums / instruments.';
+    }
+    return s;
+  };
+  api.stems.onModelProgress(({ got, total }) => {
+    chip.textContent = `AI stems ${Math.round((got / total) * 100)}%`;
+  });
+  chip.addEventListener('click', async () => {
+    const s = await render();
+    if (s.model || s.downloading) return;
+    chip.className = 'chip';
+    chip.textContent = 'AI stems 0%';
+    try {
+      await api.stems.downloadModel();
+      toast('AI stems model installed — separating the loaded tracks.');
+      for (const n of DECKS) {
+        const deck = mixer.decks[n];
+        if (deck.track && deck.buffer) prepareAiStems(n, deck.track, deck.buffer);
+      }
+    } catch (err) {
+      toast(`Couldn't get the AI stems model: ${cleanErr(err)}`, 'error');
+    }
+    render();
+  });
+  state.renderAiChip = render;
+  render();
+}
+
 function setupDialogs() {
   const help = $('#helpDialog');
   $('#helpBtn').addEventListener('click', () => help.showModal());
@@ -1510,7 +1623,9 @@ function setupZoom() {
 
 function setupKeyboard() {
   const held = new Set();
-  const typing = (e) => e.target.closest('input[type="search"], input[type="url"], input[type="text"], textarea, select');
+  // Any text box (inputs without a type attribute too, like the Spotify key fields).
+  const typing = (e) => e.target.closest('input:not([type="range"]):not([type="checkbox"]), textarea, select');
+  let spacePaused = []; // decks the space bar stopped, so the next press brings back just those
   window.addEventListener('keydown', (e) => {
     if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) {
       if (e.key === 'Escape' && typing(e)) e.target.blur();
@@ -1527,12 +1642,30 @@ function setupKeyboard() {
     const hotA = { '1': 0, '2': 1, '3': 2, '4': 3 };
     const hotB = { '7': 0, '8': 1, '9': 2, '0': 3 };
     let handled = true;
+    if (e.code === 'Space') {
+      if (e.repeat) return e.preventDefault();
+      // Space: pause everything that's playing; press again to resume those decks.
+      const playing = DECKS.filter((n) => mixer.decks[n].playing);
+      if (playing.length) {
+        playing.forEach((n) => mixer.decks[n].pause());
+        spacePaused = playing;
+      } else {
+        spacePaused.filter((n) => mixer.decks[n].buffer).forEach((n) => {
+          mixer.decks[n].play();
+          markPlayed(n);
+        });
+        spacePaused = [];
+      }
+      return e.preventDefault();
+    }
     if (k === 'x') { A.toggle(); markPlayed('A'); }
     else if (k === 'z') A.cue();
     else if (k === 'c') doSync('A');
     else if (k === ',') { B.toggle(); markPlayed('B'); }
     else if (k === 'm') B.cue();
     else if (k === '.') doSync('B');
+    else if (k === 'v') toggleDrop('A');
+    else if (k === 'n') toggleDrop('B');
     else if (e.code.startsWith('Digit') && e.code.slice(5) in hotA && !e.shiftKey) hotcue('A', hotA[e.code.slice(5)]);
     else if (e.code.startsWith('Digit') && e.code.slice(5) in hotA && e.shiftKey) clearHotcue('A', hotA[e.code.slice(5)]);
     else if (e.code.startsWith('Digit') && e.code.slice(5) in hotB) (e.shiftKey ? clearHotcue : hotcue)('B', hotB[e.code.slice(5)]);
@@ -1560,11 +1693,34 @@ function setupKeyboard() {
 
 // ------------------------------------------------------------------ boot
 
-// Drop settings left by the old theme picker / background picture (the picture could be MBs).
-try {
-  localStorage.removeItem('theme');
-  localStorage.removeItem('bg');
-} catch {}
+// Themes. Canvas colours here must match each theme's --a / --b / --bg in styles.css.
+const THEMES = {
+  dark: { A: [255, 138, 61], B: [66, 182, 255], ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] },
+  aloe: { A: [228, 87, 46], B: [28, 127, 196], ink: '18,48,28', shade: '251,254,251', hi: [96, 130, 108] },
+  cherry: { A: [255, 59, 92], B: [255, 163, 192], ink: '253,238,242', shade: '39,16,26', hi: [214, 168, 182] },
+};
+function setTheme(name) {
+  const t = THEMES[name] ? name : 'dark';
+  document.body.dataset.theme = t;
+  Object.assign(ACCENT, { A: THEMES[t].A, B: THEMES[t].B });
+  Object.assign(INK, { ink: THEMES[t].ink, shade: THEMES[t].shade, hi: THEMES[t].hi });
+  DECKS.forEach((n) => (state.overviewImg[n] = null)); // redraw overviews in the new colours
+  $$('.theme-card').forEach((c) => c.setAttribute('aria-checked', String(c.dataset.theme === t)));
+  try {
+    localStorage.setItem('theme', t);
+    localStorage.removeItem('bg'); // old background-picture setting (could be MBs)
+  } catch {}
+}
+function setupSettings() {
+  const dlg = $('#settingsDialog');
+  $('#settingsBtn').addEventListener('click', () => dlg.showModal());
+  $$('.theme-card').forEach((c) => c.addEventListener('click', () => setTheme(c.dataset.theme)));
+  let saved = 'dark';
+  try {
+    saved = localStorage.getItem('theme') || 'dark';
+  } catch {}
+  setTheme(saved);
+}
 
 DECKS.forEach(buildDeck);
 buildMixer();
@@ -1576,6 +1732,9 @@ setupTabs();
 setupZoom();
 setupKeyboard();
 setupYtdlpChip();
+setupAiChip();
+setupSettings();
+setupSfx();
 DECKS.forEach((n) => {
   renderTempo(n);
   renderHotcues(n);
@@ -1586,6 +1745,7 @@ api.stems.onProgress(({ trackId, done, total }) => {
   if (!state.stemJobs.has(trackId)) return;
   state.stemJobs.set(trackId, { done, total });
   DECKS.forEach(renderStems);
+  if (done === 1) state.renderAiChip?.(); // shows GPU / CPU once the model is running
 });
 mixer.fxReady.then((ok) => {
   if (!ok) toast('Key shift and stems couldn’t start on this computer — decks still play normally.', 'error');

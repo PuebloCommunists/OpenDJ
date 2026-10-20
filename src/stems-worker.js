@@ -19,20 +19,35 @@ const STEM_ORDER = ['drums', 'bass', 'other', 'vocals']; // model output order
 
 let session = null;
 let ort = null;
+let provider = null;
 
+// The graphics card (DirectML) when it can hold the model, else the CPU.
+// CPU settings, measured on a Snapdragon X Plus (8 cores): memory arena off cuts
+// RAM from ~4.8 GB to ~0.5 GB; 4 threads is fastest and leaves cores for audio and the UI.
 async function getSession() {
   if (session) return session;
   ort = require(workerData.runtimePath);
-  // Measured on a Snapdragon X Plus (8 cores): memory arena off cuts RAM from
-  // ~4.8 GB to ~0.5 GB; 4 threads is fastest (0.37× track length) and leaves
-  // cores free for audio and the UI.
-  session = await ort.InferenceSession.create(workerData.modelPath, {
-    executionProviders: ['cpu'],
-    graphOptimizationLevel: 'all',
-    enableCpuMemArena: false,
-    intraOpNumThreads: 4,
-  });
+  const cpu = { executionProviders: ['cpu'], graphOptimizationLevel: 'all', enableCpuMemArena: false, intraOpNumThreads: 4 };
+  try {
+    session = await ort.InferenceSession.create(workerData.modelPath, { executionProviders: ['dml'], graphOptimizationLevel: 'all', enableMemPattern: false });
+    provider = 'dml';
+  } catch {
+    session = await ort.InferenceSession.create(workerData.modelPath, cpu);
+    provider = 'cpu';
+  }
   return session;
+}
+
+// A GPU can fail on the first real run (e.g. out of video memory) even after loading: fall back once.
+async function run(feeds) {
+  try {
+    return await session.run(feeds);
+  } catch (err) {
+    if (provider !== 'dml') throw err;
+    session = await ort.InferenceSession.create(workerData.modelPath, { executionProviders: ['cpu'], graphOptimizationLevel: 'all', enableCpuMemArena: false, intraOpNumThreads: 4 });
+    provider = 'cpu';
+    return session.run(feeds);
+  }
 }
 
 function writeWav(file, L, R) {
@@ -81,8 +96,8 @@ async function separate({ jobId, left, right, outDir }) {
     input.fill(0);
     input.set(left.subarray(start, start + len), 0);
     input.set(right.subarray(start, start + len), SEG);
-    const res = await s.run({ [s.inputNames[0]]: new ort.Tensor('float32', input, [1, 2, SEG]) });
-    const y = res[s.outputNames[0]].data; // [1, 4, 2, SEG]
+    const res = await run({ [s.inputNames[0]]: new ort.Tensor('float32', input, [1, 2, SEG]) });
+    const y = res[session.outputNames[0]].data; // [1, 4, 2, SEG]
     const first = k === 0;
     const last = k === starts.length - 1;
     for (let i = 0; i < len; i++) {
@@ -94,7 +109,7 @@ async function separate({ jobId, left, right, outDir }) {
         out[st][1][start + i] += w * y[(st * 2 + 1) * SEG + i];
       }
     }
-    parentPort.postMessage({ type: 'progress', jobId, done: k + 1, total: starts.length });
+    parentPort.postMessage({ type: 'progress', jobId, done: k + 1, total: starts.length, provider });
   }
   for (let i = 0; i < n; i++) {
     const w = weight[i] || 1;

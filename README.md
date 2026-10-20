@@ -11,6 +11,17 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.0-beta
+
+- **Look:** one clean theme set, picked in **⚙ Settings**: Midnight (dark), Aloe (bright green) and Cherry. Cherries throughout.
+- **Records:** a turntable on each deck you can grab and scratch, with real scratch sound. Dragging the waveform scratches too; a flick on a paused deck glides.
+- **Bars and sync:** time signature (3/4 or 4/4) and beat 1 are detected per track; **Sync** lines up bars, not just beats. A bar counter shows where you are (`bar 3 · ●●●○`), and **Beat 1** / **4/4** fix the grid by hand.
+- **DROP** (V / N): one press builds up over the next bar or two (loop roll 1 → ⅛ beat, high-pass sweep, noise riser) and drops on beat 1, with the track carrying on exactly in time (slip mode). Press again to cancel.
+- **SFX tab:** ten dubstep / dariacore one-shots (air horn, dub siren, laser, sub drop, wobble, riser, rewind and more), synthesized live, optionally quantized to the beat.
+- **AI stems:** real model-separated vocals / drums / instruments. With an NVIDIA GPU and the optional PyTorch setup (see `src/stems-gpu.py`), MelBand RoFormer + HT-Demucs fine-tuned run on the GPU (~1 minute per track); otherwise HT-Demucs runs on the CPU (**Get AI stems** downloads its model). DSP stems stay as the instant fallback.
+- **Search:** a **YouTube / Spotify** switch. Spotify searches the catalogue (needs a free app key) and fetches the matching YouTube upload for the audio.
+- **Space bar** pauses everything and resumes the same decks; smoother zoom, animations, and a desktop launcher (`Start OpenDJ.cmd`).
+
 ## Running it (Windows on ARM)
 
 1. Unzip `CommonsDJ-win-arm64.zip` somewhere you keep apps, such as `Documents\Apps\Commons DJ`.

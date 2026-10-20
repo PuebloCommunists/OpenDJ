@@ -37,6 +37,13 @@ contextBridge.exposeInMainWorld('cdj', {
   },
   stems: {
     status: (id) => ipcRenderer.invoke('stems:status', id),
+    setup: () => ipcRenderer.invoke('stems:setup'),
+    downloadModel: () => ipcRenderer.invoke('stems:downloadModel'),
+    onModelProgress: (fn) => {
+      const handler = (_e, payload) => fn(payload);
+      ipcRenderer.on('stems:modelProgress', handler);
+      return () => ipcRenderer.removeListener('stems:modelProgress', handler);
+    },
     separate: (id, left, right) => ipcRenderer.invoke('stems:separate', id, left, right),
     read: (id, name) => ipcRenderer.invoke('stems:read', id, name),
     onProgress: (fn) => {

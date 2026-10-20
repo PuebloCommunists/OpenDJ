@@ -492,6 +492,7 @@ async function importLocalFiles(filePaths) {
 const STEM_MODEL = 'htdemucs_fp16weights.onnx';
 const STEM_NAMES = ['drums', 'bass', 'other', 'vocals'];
 let stemWorker = null;
+let stemProvider = null; // 'dml' (graphics card) or 'cpu', once the worker has loaded the model
 const stemJobs = new Map(); // trackId -> { promise, resolve, reject }
 let stemQueue = Promise.resolve();
 
@@ -510,11 +511,63 @@ function stemSetup() {
   return { model, runtime, available: !!(model && runtime) };
 }
 
+// Community ONNX export of HT-Demucs v4 (MIT, see docs/new-features/ai-stems-plan.md).
+const STEM_MODEL_URL = `https://huggingface.co/adowu/htdemucs-onnx/resolve/main/${STEM_MODEL}`;
+let modelDownload = null;
+
+/** Download the model into <userData>/models, once, with progress events. */
+function downloadStemModel() {
+  if (modelDownload) return modelDownload;
+  modelDownload = (async () => {
+    const dir = path.join(paths.root, 'models');
+    const dest = path.join(dir, STEM_MODEL);
+    if (fs.existsSync(dest)) return true;
+    fs.mkdirSync(dir, { recursive: true });
+    const res = await net.fetch(STEM_MODEL_URL, { redirect: 'follow' });
+    if (!res.ok) throw new Error(`Model download failed (HTTP ${res.status}).`);
+    // shortcut: checks the size the server reports (no checksum is published), pin a SHA-256 if the file is ever mirrored.
+    const total = Number(res.headers.get('content-length'));
+    if (total < 100_000_000) throw new Error('The model download looks wrong (unexpected size).');
+    const part = dest + '.part';
+    const out = fs.createWriteStream(part);
+    let got = 0;
+    let lastSent = 0;
+    try {
+      for await (const chunk of res.body) {
+        got += chunk.length;
+        if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+        if (got - lastSent > 2_000_000) {
+          lastSent = got;
+          mainWindow?.webContents.send('stems:modelProgress', { got, total });
+        }
+      }
+      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+    } catch (err) {
+      out.destroy();
+      await fsp.rm(part, { force: true });
+      throw err;
+    }
+    if (got !== total) {
+      await fsp.rm(part, { force: true });
+      throw new Error(`Model download was incomplete (${got} of ${total} bytes).`);
+    }
+    fs.renameSync(part, dest);
+    return true;
+  })().finally(() => (modelDownload = null));
+  return modelDownload;
+}
+
 const stemDir = (id) => path.join(paths.root, 'stems', String(id).replace(/[^a-zA-Z0-9_-]/g, ''));
 
 function cachedStems(id) {
   const dir = stemDir(id);
   if (!fs.existsSync(path.join(dir, 'stems.json'))) return null;
+  // Once the GPU models are installed, older CPU-only stems are redone at the higher quality.
+  try {
+    if (gpuSetup() && JSON.parse(fs.readFileSync(path.join(dir, 'stems.json'), 'utf8')).device !== 'cuda') return null;
+  } catch {
+    return null;
+  }
   const files = Object.fromEntries(STEM_NAMES.map((n) => [n, path.join(dir, `${n}.wav`)]));
   return Object.values(files).every((f) => fs.existsSync(f)) ? files : null;
 }
@@ -525,6 +578,7 @@ function getStemWorker(setup) {
   stemWorker = new Worker(path.join(__dirname, 'stems-worker.js'), { workerData: { modelPath: setup.model, runtimePath: setup.runtime } });
   stemWorker.on('message', (m) => {
     const job = stemJobs.get(m.jobId);
+    if (m.provider) stemProvider = m.provider;
     if (m.type === 'progress') mainWindow?.webContents.send('stems:progress', { trackId: m.jobId, done: m.done, total: m.total });
     if (!job) return;
     if (m.type === 'done') job.resolve({ ms: m.ms });
@@ -539,10 +593,59 @@ function getStemWorker(setup) {
   return stemWorker;
 }
 
+// ---- High-quality GPU path (optional): BS-RoFormer + HT-Demucs-ft on an NVIDIA GPU
+// through a private Python + PyTorch (CUDA) install in <userData>/stems-gpu. Its
+// setup writes stems-gpu/ready.json (models chosen and verified) when complete.
+function gpuSetup() {
+  const dir = path.join(paths.root, 'stems-gpu');
+  const python = path.join(dir, 'Scripts', 'python.exe');
+  try {
+    const ready = JSON.parse(fs.readFileSync(path.join(dir, 'ready.json'), 'utf8'));
+    if (fs.existsSync(python)) return { python, modelDir: path.join(dir, 'models'), ...ready };
+  } catch {}
+  return null;
+}
+
+function writeWav16(file, left, right) {
+  const n = left.length;
+  const buf = Buffer.alloc(44 + n * 4);
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + n * 4, 4); buf.write('WAVE', 8); buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(2, 22); buf.writeUInt32LE(44100, 24);
+  buf.writeUInt32LE(44100 * 4, 28); buf.writeUInt16LE(4, 32); buf.writeUInt16LE(16, 34); buf.write('data', 36); buf.writeUInt32LE(n * 4, 40);
+  for (let i = 0, o = 44; i < n; i++, o += 4) {
+    buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(left[i] * 32767))), o);
+    buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(right[i] * 32767))), o + 2);
+  }
+  fs.writeFileSync(file, buf);
+}
+
+function separateOnGpu(gpu, id, left, right) {
+  const input = path.join(app.getPath('temp'), `cdj-stems-${id}.wav`);
+  writeWav16(input, left, right);
+  const script = path.join(__dirname, 'stems-gpu.py').replace('app.asar', 'app.asar.unpacked');
+  return new Promise((resolve, reject) => {
+    const p = spawn(gpu.python, [script, input, stemDir(id), gpu.modelDir, gpu.vocalModel, gpu.splitModel], { windowsHide: true });
+    let err = '';
+    p.stdout.on('data', (d) => {
+      for (const m of String(d).matchAll(/PROGRESS (\d+) (\d+)/g)) {
+        mainWindow?.webContents.send('stems:progress', { trackId: id, done: Number(m[1]), total: Number(m[2]) });
+      }
+    });
+    p.stderr.on('data', (d) => (err = (err + d).slice(-2000)));
+    p.on('error', reject);
+    p.on('close', (code) => {
+      fs.rm(input, { force: true }, () => {});
+      if (code === 0 && cachedStems(id)) resolve({ device: 'cuda' });
+      else reject(new Error(`GPU separation failed (exit ${code}): ${err.trim().split('\n').pop() || 'no output'}`));
+    });
+  });
+}
+
 /** Separate one track (44.1 kHz stereo PCM from the renderer). One job at a time. */
 function separateStems(id, left, right) {
+  const gpu = gpuSetup();
   const setup = stemSetup();
-  if (!setup.available) return Promise.reject(new Error('AI stems are not installed.'));
+  if (!gpu && !setup.available) return Promise.reject(new Error('AI stems are not installed.'));
   if (!findTrack(id)) return Promise.reject(new Error('Track not found'));
   if (cachedStems(id)) return Promise.resolve({ cached: true });
   if (stemJobs.has(id)) return stemJobs.get(id).promise;
@@ -553,8 +656,29 @@ function separateStems(id, left, right) {
     reject = rej;
   });
   stemJobs.set(id, { promise, resolve, reject });
-  stemQueue = stemQueue.then(() => {
+  const onCpu = () => {
+    if (!setup.available) throw new Error('GPU separation failed and the CPU model is not installed.');
     getStemWorker(setup).postMessage({ type: 'separate', jobId: id, left, right, outDir: stemDir(id) }, [left.buffer, right.buffer]);
+  };
+  stemQueue = stemQueue.then(async () => {
+    try {
+      if (!gpu) onCpu();
+      else {
+        try {
+          stemProvider = 'cuda';
+          const r = await separateOnGpu(gpu, id, left, right);
+          stemJobs.delete(id);
+          resolve(r);
+        } catch (err) {
+          console.error(err.message);
+          stemProvider = null;
+          onCpu(); // the worker resolves/rejects the job as before
+        }
+      }
+    } catch (err) {
+      stemJobs.delete(id);
+      reject(err);
+    }
     return promise.catch(() => {});
   });
   return promise;
@@ -565,8 +689,15 @@ function separateStems(id, left, right) {
 function registerIpc() {
   ipcMain.handle('stems:status', (_e, id) => {
     const setup = stemSetup();
-    return { available: setup.available, ready: !!cachedStems(id), busy: stemJobs.has(id) };
+    return { available: setup.available || !!gpuSetup(), ready: !!cachedStems(id), busy: stemJobs.has(id) };
   });
+
+  ipcMain.handle('stems:setup', () => {
+    const s = stemSetup();
+    const gpu = gpuSetup();
+    return { runtime: !!s.runtime || !!gpu, model: !!s.model || !!gpu, downloading: !!modelDownload, provider: gpu ? 'cuda' : stemProvider, gpuModel: gpu?.label };
+  });
+  ipcMain.handle('stems:downloadModel', () => downloadStemModel());
 
   ipcMain.handle('stems:separate', (_e, id, left, right) => separateStems(id, new Float32Array(left), new Float32Array(right)));
 

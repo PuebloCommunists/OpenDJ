@@ -28,8 +28,10 @@
       </div>
     </div>
     <div class="top-right">
+      <button class="chip" id="aiChip" hidden>AI stems</button>
       <button class="chip" id="ytdlpChip" title="yt-dlp status">yt-dlp …</button>
       <button class="chip" id="creditsBtn" title="Credits for Creative Commons tracks you've played">Credits <span id="creditsCount">0</span></button>
+      <button class="chip icon" id="settingsBtn" title="Settings" aria-label="Settings">⚙</button>
       <button class="chip icon" id="helpBtn" title="Keyboard shortcuts (?)">?</button>
     </div>
   </header>
@@ -95,6 +97,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab on" data-tab="library" role="tab" aria-selected="true">Library <span id="libCount" class="count">0</span></button>
       <button class="tab" data-tab="cc" role="tab" aria-selected="false">Search</button>
+      <button class="tab" data-tab="sfx" role="tab" aria-selected="false">SFX</button>
       <div class="tab-tools" data-for="library">
         <input id="libFilter" class="field" type="search" placeholder="Filter library  ( / )" />
         <button class="btn" id="addFiles">Add files</button>
@@ -146,6 +149,15 @@
       <div id="ccInfo" class="cc-info" hidden></div>
       <div id="ccResults" class="cc-results"></div>
     </div>
+    <div class="panel" data-panel="sfx">
+    <div class="sfx-bar">
+      <span class="muted small">Dubstep / dariacore one-shots, made live — no samples. They play over the master.</span>
+      <label class="sfx-q" title="Start each sound on the next beat of the playing deck"><input type="checkbox" id="sfxQuantize" checked /> Quantize</label>
+      <span class="label">Level</span>
+      <input id="sfxLevel" class="hslider" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="SFX level" />
+    </div>
+    <div class="sfx-grid" id="sfxGrid"></div>
+    </div>
   </section>
 
   <div id="dropOverlay" class="drop-overlay" hidden><div>Drop audio files to add them</div></div>
@@ -156,23 +168,42 @@
     <div class="keys">
       <div>
         <h3 class="a">Deck A</h3>
-        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync to B</p>
+        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync to B</p><p><kbd>V</kbd> drop</p>
         <p><kbd>1</kbd>–<kbd>4</kbd> hot cues</p><p><kbd>Q</kbd> / <kbd>W</kbd> nudge (hold)</p>
       </div>
       <div>
         <h3 class="b">Deck B</h3>
-        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync to A</p>
+        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync to A</p><p><kbd>N</kbd> drop</p>
         <p><kbd>7</kbd>–<kbd>0</kbd> hot cues</p><p><kbd>O</kbd> / <kbd>P</kbd> nudge (hold)</p>
       </div>
       <div>
         <h3>Mixer</h3>
         <p><kbd>←</kbd> <kbd>→</kbd> crossfader</p><p><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> slam to side</p>
-        <p><kbd>/</kbd> filter library</p><p><kbd>?</kbd> this help</p>
+        <p><kbd>Space</kbd> pause all / resume</p><p><kbd>/</kbd> filter library</p><p><kbd>?</kbd> this help</p>
       </div>
     </div>
     <p class="muted small">Hot cues: click an empty pad to set it, click again to jump, right-click to clear.
       Knobs: drag up/down, scroll, double-click to reset. Tempo slider: double-click to reset.</p>
     <form method="dialog"><button class="btn">Close</button></form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="dlg">
+    <h2>Settings</h2>
+    <section class="set-section">
+      <h3>Theme</h3>
+      <div class="theme-cards" role="radiogroup" aria-label="Theme">
+        <button class="theme-card" data-theme="dark" role="radio" aria-checked="true">
+          <span class="swatch dark"><i></i><i></i><i></i></span><b>Midnight</b><span class="muted small">Dark and quiet</span>
+        </button>
+        <button class="theme-card" data-theme="aloe" role="radio" aria-checked="false">
+          <span class="swatch aloe"><i></i><i></i><i></i></span><b>Aloe</b><span class="muted small">Bright, fresh green</span>
+        </button>
+        <button class="theme-card" data-theme="cherry" role="radio" aria-checked="false">
+          <span class="swatch cherry"><i></i><i></i><i></i></span><b>Cherry</b><span class="muted small">Deep red, cherries everywhere</span>
+        </button>
+      </div>
+    </section>
+    <form method="dialog" class="dlg-actions"><button class="btn">Done</button></form>
   </dialog>
 
   <dialog id="creditsDialog" class="dlg">
@@ -225,6 +256,7 @@
           <button class="pad cue" title="Cue: set or jump back to the cue point">Cue</button>
           <button class="pad play" title="Play / pause">▶</button>
           <button class="pad sync" title="Match tempo and beat to the other deck">Sync</button>
+          <button class="pad drop" title="Build-up and drop: loop roll, filter sweep and riser, then everything lets go on the next bar (V / N). Press again to cancel.">Drop</button>
           <div class="nudge">
             <button class="mini nudge-back" title="Nudge back (hold)">◀◀</button>
             <button class="mini nudge-fwd" title="Nudge forward (hold)">▶▶</button>
