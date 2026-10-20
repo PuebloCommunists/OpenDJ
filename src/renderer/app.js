@@ -18,7 +18,8 @@ const state = {
   filter: '',
   waves: { A: null, B: null },
   overviewImg: { A: null, B: null },
-  zoom: 110, // waveform pixels per second
+  zoom: 110, // waveform pixels per second (eases towards zoomTarget each frame)
+  zoomTarget: 110,
   played: new Map(), // trackId -> track (web tracks played this session, for credits)
   ccResults: [],
   jobs: new Map(), // jobId -> { el, url }
@@ -205,6 +206,18 @@ function buildDeck(name) {
   };
   ui[name] = d;
 
+  // Keyboard shortcut hints in the tooltips (the template is shared by both decks).
+  const keys = name === 'A'
+    ? { play: 'X', cue: 'Z', sync: 'C', back: 'Q', fwd: 'W', hc: ['1', '2', '3', '4'] }
+    : { play: ',', cue: 'M', sync: '.', back: 'O', fwd: 'P', hc: ['7', '8', '9', '0'] };
+  const hint = (el, k) => (el.title = `${el.title} [${k}]`);
+  hint(d.play, keys.play);
+  hint(d.cue, keys.cue);
+  hint(d.sync, keys.sync);
+  hint($('.nudge-back', root), keys.back);
+  hint($('.nudge-fwd', root), keys.fwd);
+  d.hotcues.forEach((b, i) => (b.dataset.key = keys.hc[i]));
+
   d.play.addEventListener('click', () => {
     deck.toggle();
     markPlayed(name);
@@ -308,6 +321,7 @@ function renderDeckState(name) {
   const d = ui[name];
   d.play.classList.toggle('on', deck.playing);
   d.play.textContent = deck.playing ? '❚❚' : '▶';
+  d.root.classList.toggle('playing', deck.playing);
   const t = deck.track;
   if (t) {
     d.title.textContent = t.title || 'Untitled';
@@ -402,6 +416,8 @@ function renderStems(name) {
     btn.classList.toggle('off', deck.stems[btn.dataset.stem] === 0);
     btn.disabled = !deck.fx;
   });
+  const muted = STEMS.filter((s) => deck.stems[s] === 0).length;
+  ui[name].root.classList.toggle('stems-muted', muted > 0);
   const label = ui[name].stemLabel;
   const job = state.stemJobs.get(deck.track?.id);
   label.classList.toggle('ai', !!deck.aiStems);
@@ -502,7 +518,7 @@ function renderHotcues(name) {
   ui[name].hotcues.forEach((btn, i) => {
     const set = t?.cues?.[i] != null;
     btn.classList.toggle('set', set);
-    btn.title = set ? `Hot cue ${i + 1} at ${fmtTime(t.cues[i], true)} (right-click to clear)` : `Set hot cue ${i + 1}`;
+    btn.title = (set ? `Hot cue ${i + 1} at ${fmtTime(t.cues[i], true)} (right-click to clear)` : `Set hot cue ${i + 1}`) + ` [${btn.dataset.key}]`;
   });
 }
 
@@ -899,7 +915,12 @@ function setMeter(el, db, key) {
   }
 }
 
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
 function frame() {
+  // Ease the waveform zoom towards its target instead of jumping.
+  const dz = state.zoomTarget - state.zoom;
+  state.zoom = Math.abs(dz) < 0.1 || reducedMotion.matches ? state.zoomTarget : state.zoom + dz * 0.25;
   for (const name of DECKS) {
     const deck = mixer.decks[name];
     const d = ui[name];
@@ -1312,8 +1333,59 @@ function setupTabs() {
 }
 
 function setupZoom() {
-  $('#zoomIn').addEventListener('click', () => (state.zoom = Math.min(400, state.zoom * 1.4)));
-  $('#zoomOut').addEventListener('click', () => (state.zoom = Math.max(25, state.zoom / 1.4)));
+  const zoomBy = (f) => (state.zoomTarget = Math.max(25, Math.min(400, state.zoomTarget * f)));
+  $('#zoomIn').addEventListener('click', () => zoomBy(1.4));
+  $('#zoomOut').addEventListener('click', () => zoomBy(1 / 1.4));
+  // Ctrl + scroll over the waveforms zooms too.
+  $('.waves').addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+  }, { passive: false });
+}
+
+// Split between the decks and the library: drag the handle to shrink or hide the
+// scrolling waveforms (the library gets the room), double-click to toggle.
+function setupSplit() {
+  const handle = $('#split');
+  const MAX = 140;
+  let waveH = 70;
+  const apply = (h, save = true) => {
+    waveH = Math.max(0, Math.min(MAX, Math.round(h)));
+    if (waveH < 24) waveH = 0;
+    document.body.style.setProperty('--wave-h', `${waveH}px`);
+    document.body.classList.toggle('waves-hidden', waveH === 0);
+    handle.setAttribute('aria-valuenow', String(waveH));
+    if (save) try { localStorage.setItem('waveH', String(waveH)); } catch {}
+  };
+  try {
+    const saved = localStorage.getItem('waveH');
+    if (saved != null) apply(Number(saved), false);
+  } catch {}
+  handle.addEventListener('pointerdown', (e) => {
+    const y0 = e.clientY;
+    const h0 = waveH;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('splitting');
+    // Two waveform rows: each pixel of drag changes both, so halve it.
+    const move = (ev) => apply(h0 + (ev.clientY - y0) / 2);
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', () => {
+      handle.removeEventListener('pointermove', move);
+      document.body.classList.remove('splitting');
+    }, { once: true });
+  });
+  let lastOpen = 70;
+  handle.addEventListener('dblclick', () => {
+    if (waveH) lastOpen = waveH;
+    apply(waveH ? 0 : lastOpen);
+  });
+  handle.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp') apply(waveH - 10);
+    else if (e.key === 'ArrowDown') apply(waveH + 10);
+    else return;
+    e.preventDefault();
+  });
 }
 
 // ------------------------------------------------------------------ keyboard
@@ -1356,6 +1428,7 @@ function setupKeyboard() {
     else if (e.key === 'ArrowRight') setXf(e.shiftKey ? 1 : Math.min(1, Number(xf.value) + 0.05));
     else if (e.key === '/') { $$('.tab')[0].click(); $('#libFilter').focus(); }
     else if (e.key === '?') $('#helpDialog').showModal();
+    else if (k === 'b') $('#browseMax').click();
     else handled = false;
     if (handled) e.preventDefault();
   });
@@ -1431,6 +1504,7 @@ setupCc();
 setupDialogs();
 setupTabs();
 setupZoom();
+setupSplit();
 setupKeyboard();
 setupYtdlpChip();
 DECKS.forEach((n) => {
