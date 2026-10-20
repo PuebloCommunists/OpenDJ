@@ -19,7 +19,9 @@ function noiseBuffer(ctx) {
   return noiseBuffers.get(ctx);
 }
 
-export const STEMS = ['vocals', 'drums', 'instruments'];
+export const XF_SIDE = { A: 'L', C: 'L', B: 'R', D: 'R' }; // crossfader side per deck
+
+export const STEMS =['vocals', 'drums', 'instruments'];
 export const AI_STEM_NAMES = ['drums', 'bass', 'other', 'vocals'];
 
 export class Mixer {
@@ -41,9 +43,13 @@ export class Mixer {
     this.limiter.connect(this.masterAnalyser);
     this.masterAnalyser.connect(this.ctx.destination);
 
+    // Four decks always exist; the UI shows C and D in 4-deck mode. A and C sit on
+    // the crossfader's left, B and D on its right.
     this.decks = {
       A: new Deck(this, 'A'),
       B: new Deck(this, 'B'),
+      C: new Deck(this, 'C'),
+      D: new Deck(this, 'D'),
     };
     this.crossfader = 0.5;
     this.curve = 'smooth';
@@ -99,8 +105,7 @@ export class Mixer {
       b = Math.sin((x * Math.PI) / 2);
     }
     const t = this.ctx.currentTime;
-    this.decks.A.xfade.gain.setTargetAtTime(a, t, 0.005);
-    this.decks.B.xfade.gain.setTargetAtTime(b, t, 0.005);
+    for (const d of Object.values(this.decks)) d.xfade.gain.setTargetAtTime(XF_SIDE[d.name] === 'L' ? a : b, t, 0.005);
   }
 }
 

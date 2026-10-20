@@ -11,6 +11,13 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.1-beta
+
+- **4 decks:** ⚙ Settings → Decks switches between 2 and 4 decks. C and D get their own waveform, deck and mixer channel (mixer order C · A · B · D); A and C play on the crossfader's left, B and D on its right. Sync and Match follow a playing deck on the other side.
+- **Settings → Audio & display:** pick the output device (headphones, speakers, HDMI…), master volume, and fullscreen (also F11).
+- **Spotify search fixed:** Spotify now returns at most 10 results per request; searches page through 50 again, and Spotify's own error text is shown if something's wrong.
+- **Polish:** empty decks dim their controls, decks C and D fade in, smoother scrolling.
+
 ## What's new in 0.3.0-beta
 
 - **Look:** one clean theme set, picked in **⚙ Settings**: Midnight (dark), Aloe (bright green) and Cherry. Cherries throughout.

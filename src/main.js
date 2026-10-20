@@ -280,7 +280,13 @@ async function spotifyApi(pathAndQuery) {
   }
   const res = await net.fetch(`https://api.spotify.com/v1/${pathAndQuery}`, { headers: { Authorization: `Bearer ${spotifyToken.value}` } });
   if (res.status === 401) spotifyToken = null;
-  if (!res.ok) throw new Error(`Spotify request failed (HTTP ${res.status}).`);
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = (await res.json()).error?.message || '';
+    } catch {}
+    throw new Error(`Spotify request failed (HTTP ${res.status}${detail ? `: ${detail}` : ''}).`);
+  }
   return res.json();
 }
 
@@ -313,9 +319,18 @@ async function searchSpotify(query) {
   if (!q) return { ...info, received: 0, dropped: [], results: [], ms: 0 };
   const started = Date.now();
   const id = spotifyTrackId(q);
-  const items = id
-    ? [await spotifyApi(`tracks/${id}`)]
-    : (await spotifyApi(`search?type=track&limit=${SEARCH_LIMIT}&q=${encodeURIComponent(q)}`)).tracks?.items || [];
+  // Spotify caps search at 10 results per request: fetch the pages side by side.
+  const PAGE = 10;
+  const pages = id
+    ? [[await spotifyApi(`tracks/${id}`)]]
+    : await Promise.all(
+        Array.from({ length: SEARCH_LIMIT / PAGE }, (_, i) =>
+          spotifyApi(`search?type=track&limit=${PAGE}&offset=${i * PAGE}&q=${encodeURIComponent(q)}`).then((r) => r.tracks?.items || [], () => []),
+        ),
+      );
+  if (!id && pages.every((p) => !p.length)) await spotifyApi(`search?type=track&limit=${PAGE}&q=${encodeURIComponent(q)}`); // surfaces the real error, if any
+  const seen = new Set();
+  const items = pages.flat().filter((t) => t && !seen.has(t.id) && seen.add(t.id)); // pages can overlap
   const results = items.filter(Boolean).map(spotifyResult);
   return { ...info, received: items.length, dropped: [], results, ms: Date.now() - started };
 }

@@ -45,6 +45,14 @@
       <span class="wave-tag">B</span>
       <canvas id="waveB" class="scroll-wave"></canvas>
     </div>
+    <div class="wave-row extra" data-deck="C">
+      <span class="wave-tag">C</span>
+      <canvas id="waveC" class="scroll-wave"></canvas>
+    </div>
+    <div class="wave-row extra" data-deck="D">
+      <span class="wave-tag">D</span>
+      <canvas id="waveD" class="scroll-wave"></canvas>
+    </div>
     <div class="zoom">
       <button id="zoomOut" title="Zoom out">−</button>
       <button id="zoomIn" title="Zoom in">+</button>
@@ -56,6 +64,19 @@
 
     <section class="mixer">
       <div class="strips">
+        <div class="strip extra" data-deck="C">
+          <div class="knobs">
+            <div class="knob" data-param="trim" data-label="Gain"></div>
+            <div class="knob" data-param="high" data-label="High"></div>
+            <div class="knob" data-param="mid" data-label="Mid"></div>
+            <div class="knob" data-param="low" data-label="Low"></div>
+            <div class="knob" data-param="filter" data-label="Filter"></div>
+          </div>
+          <div class="fader-wrap">
+            <div class="meter meter-v"><div class="meter-fill"></div><div class="meter-peak"></div></div>
+            <input class="vslider channel-fader" type="range" min="0" max="1" step="0.005" value="1" aria-label="Deck C volume" />
+          </div>
+        </div>
         <div class="strip" data-deck="A">
           <div class="knobs">
             <div class="knob" data-param="trim" data-label="Gain"></div>
@@ -82,15 +103,30 @@
             <div class="meter meter-v"><div class="meter-fill"></div><div class="meter-peak"></div></div>
           </div>
         </div>
+        <div class="strip extra" data-deck="D">
+          <div class="knobs">
+            <div class="knob" data-param="trim" data-label="Gain"></div>
+            <div class="knob" data-param="high" data-label="High"></div>
+            <div class="knob" data-param="mid" data-label="Mid"></div>
+            <div class="knob" data-param="low" data-label="Low"></div>
+            <div class="knob" data-param="filter" data-label="Filter"></div>
+          </div>
+          <div class="fader-wrap">
+            <input class="vslider channel-fader" type="range" min="0" max="1" step="0.005" value="1" aria-label="Deck D volume" />
+            <div class="meter meter-v"><div class="meter-fill"></div><div class="meter-peak"></div></div>
+          </div>
+        </div>
       </div>
       <div class="xfader">
-        <span>A</span>
+        <span class="xf-l">A</span>
         <input id="crossfader" class="hslider xf" type="range" min="0" max="1" step="0.005" value="0.5" aria-label="Crossfader" />
-        <span>B</span>
+        <span class="xf-r">B</span>
       </div>
     </section>
 
     <section class="deck" id="deckB" data-deck="B"></section>
+    <section class="deck extra" id="deckC" data-deck="C"></section>
+    <section class="deck extra" id="deckD" data-deck="D"></section>
   </main>
 
   <section class="browser">
@@ -202,6 +238,25 @@
           <span class="swatch cherry"><i></i><i></i><i></i></span><b>Cherry</b><span class="muted small">Deep red, cherries everywhere</span>
         </button>
       </div>
+    </section>
+    <section class="set-section">
+      <h3>Audio &amp; display</h3>
+      <div class="set-grid">
+        <label for="setOutput">Output device</label>
+        <select id="setOutput" class="field"><option value="">System default</option></select>
+        <label for="setVolume">Master volume</label>
+        <input id="setVolume" class="hslider" type="range" min="0" max="1" step="0.01" value="0.85" />
+        <span>Fullscreen</span>
+        <button id="setFullscreen" class="btn" type="button">Enter fullscreen (F11)</button>
+      </div>
+    </section>
+    <section class="set-section">
+      <h3>Decks</h3>
+      <div class="seg" id="deckCountSeg" role="radiogroup" aria-label="Number of decks">
+        <button data-decks="2" class="on" role="radio" aria-checked="true">2 decks</button>
+        <button data-decks="4" role="radio" aria-checked="false">4 decks</button>
+      </div>
+      <p class="muted small">4 decks adds C and D: C plays through the crossfader's left side with A, D through the right with B. Decks go compact to fit.</p>
     </section>
     <form method="dialog" class="dlg-actions"><button class="btn">Done</button></form>
   </dialog>

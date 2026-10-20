@@ -1,5 +1,5 @@
 // Commons DJ — UI
-import { Mixer, peakDb, STEMS, AI_STEM_NAMES } from './engine.js';
+import { Mixer, peakDb, STEMS, AI_STEM_NAMES, XF_SIDE } from './engine.js';
 import { SOUNDS } from './sfx.js';
 import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey } from './analysis.js';
 
@@ -9,17 +9,34 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const mixer = new Mixer();
 window.cdjDebug = { mixer }; // for tests and the devtools console
-const DECKS = ['A', 'B'];
+const DECKS = ['A', 'B', 'C', 'D']; // all built; C and D show in 4-deck mode (Settings)
+const activeDecks = () => (document.body.classList.contains('decks-4') ? DECKS : ['A', 'B']);
+const otherSide = (name) => (XF_SIDE[name] === 'L' ? 'R' : 'L');
+
+/**
+ * The deck to sync / key-match to: a playing deck on the other crossfader side,
+ * then any other playing deck, then the other side's main deck (A ↔ B).
+ */
+function partnerDeck(name) {
+  const others = activeDecks().filter((n) => n !== name && mixer.decks[n].track);
+  return (
+    others.find((n) => XF_SIDE[n] === otherSide(name) && mixer.decks[n].playing) ||
+    others.find((n) => mixer.decks[n].playing) ||
+    others.find((n) => n === (otherSide(name) === 'R' ? 'B' : 'A')) ||
+    others[0] ||
+    (XF_SIDE[name] === 'L' ? 'B' : 'A')
+  );
+}
 // Canvas colours. ACCENT matches --a / --b and shade matches --bg in styles.css.
-const ACCENT = { A: [255, 138, 61], B: [66, 182, 255] };
+const ACCENT = { A: [255, 138, 61], B: [66, 182, 255], C: [181, 123, 255], D: [163, 230, 53] };
 const INK = { ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] };
 const HOTCUE_COLORS = ['#ff5c6c', '#42d392', '#8b7bff', '#ffd24d'];
 
 const state = {
   tracks: [],
   filter: '',
-  waves: { A: null, B: null },
-  overviewImg: { A: null, B: null },
+  waves: { A: null, B: null, C: null, D: null },
+  overviewImg: { A: null, B: null, C: null, D: null },
   zoom: 110, // waveform pixels per second
   played: new Map(), // trackId -> track (web tracks played this session, for credits)
   ccResults: [],
@@ -331,6 +348,7 @@ function renderDeckState(name) {
   d.play.classList.toggle('on', deck.playing);
   d.play.textContent = deck.playing ? '❚❚' : '▶';
   const t = deck.track;
+  d.root.classList.toggle('has-track', !!t);
   if (t) {
     d.title.textContent = t.title || 'Untitled';
     d.artist.textContent = t.artist || (t.source?.uploader ?? '');
@@ -381,9 +399,10 @@ function syncTempoSlider(name) {
 
 /** The deck the crowd is hearing most: playing, and favoured by the crossfader. */
 function leadDeck() {
-  const playing = DECKS.filter((n) => mixer.decks[n].playing && mixer.decks[n].bars);
+  const playing = activeDecks().filter((n) => mixer.decks[n].playing && mixer.decks[n].bars);
   if (playing.length < 2) return playing[0] ? mixer.decks[playing[0]] : null;
-  return mixer.decks[mixer.crossfader > 0.5 ? 'B' : 'A'];
+  const side = mixer.crossfader > 0.5 ? 'R' : 'L';
+  return mixer.decks[playing.find((n) => XF_SIDE[n] === side) || playing[0]];
 }
 
 function playSfx(sound, pad) {
@@ -426,12 +445,12 @@ function toggleDrop(name) {
 
 function doSync(name) {
   const deck = mixer.decks[name];
-  const other = mixer.decks[name === 'A' ? 'B' : 'A'];
-  if (!deck.track || !other.track) return toast('Load tracks on both decks to sync.');
+  const other = mixer.decks[partnerDeck(name)];
+  if (!deck.track || !other.track) return toast('Load a track on another deck to sync to.');
   if (!deck.bpm || !other.bpm) return toast('Both tracks need a BPM — try TAP to set one.');
   if (!deck.syncTo(other)) return toast('Tempos are too far apart to sync.', 'error');
   if (deck.lastSync === 'beat' && deck.bars && other.bars && deck.bars.beatsPerBar !== other.bars.beatsPerBar)
-    toast(`Synced beats only — deck ${name} is in ${deck.bars.beatsPerBar}/4, the other in ${other.bars.beatsPerBar}/4.`);
+    toast(`Synced beats only — deck ${name} is in ${deck.bars.beatsPerBar}/4, deck ${other.name} in ${other.bars.beatsPerBar}/4.`);
   ui[name].sync.classList.add('on');
   setTimeout(() => ui[name].sync.classList.remove('on'), 500);
 }
@@ -538,8 +557,8 @@ async function prepareAiStems(name, track, buffer) {
 
 function matchKey(name) {
   const deck = mixer.decks[name];
-  const other = mixer.decks[name === 'A' ? 'B' : 'A'];
-  if (!deck.track || !other.track) return toast('Load tracks on both decks to match keys.');
+  const other = mixer.decks[partnerDeck(name)];
+  if (!deck.track || !other.track) return toast('Load a track on another deck to match keys with.');
   if (deck.track.key == null || deck.track.key < 0 || other.track.key == null || other.track.key < 0) {
     return toast('Both tracks need a detected key to match.');
   }
@@ -993,7 +1012,7 @@ function setMeter(el, db, key) {
 const SECONDS_PER_TURN = 60 / (100 / 3);
 
 function frame() {
-  for (const name of DECKS) {
+  for (const name of activeDecks()) {
     const deck = mixer.decks[name];
     const d = ui[name];
     drawScrolling(name);
@@ -1041,8 +1060,7 @@ function renderLibrary() {
   const rows = q
     ? state.tracks.filter((t) => `${t.title} ${t.artist} ${t.source?.uploader || ''} ${keyLabel(t.key)}`.toLowerCase().includes(q))
     : state.tracks;
-  const onA = mixer.decks.A.track?.id;
-  const onB = mixer.decks.B.track?.id;
+  const loadedOn = (t) => activeDecks().filter((n) => mixer.decks[n].track?.id === t.id).map((n) => `on-${n.toLowerCase()}`);
   $('#libCount').textContent = state.tracks.length;
   $('#libEmpty').hidden = state.tracks.length > 0;
   $('#libBody').innerHTML = rows
@@ -1051,9 +1069,9 @@ function renderLibrary() {
       const src = web
         ? `<span class="src cc" title="${escapeHtml(t.source.license || '')}">${escapeHtml(shortLicense(t.source.license))} · ${escapeHtml(t.source.extractor || 'web')}</span>`
         : '<span class="src local">Local file</span>';
-      const cls = [t.missing ? 'missing' : '', t.id === onA ? 'on-a' : '', t.id === onB ? 'on-b' : ''].join(' ');
+      const cls = [t.missing ? 'missing' : '', ...loadedOn(t)].join(' ');
       return `<tr draggable="true" data-id="${t.id}" class="${cls}">
-        <td><button class="load-btn a" data-load="A" title="Load to deck A">A</button><button class="load-btn b" data-load="B" title="Load to deck B">B</button></td>
+        <td>${DECKS.map((n) => `<button class="load-btn ${n.toLowerCase()}" data-load="${n}" title="Load to deck ${n}">${n}</button>`).join('')}</td>
         <td title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</td>
         <td title="${escapeHtml(t.artist)}">${escapeHtml(t.artist)}</td>
         <td class="num">${t.bpm ? Number(t.bpm).toFixed(1) : ''}</td>
@@ -1069,7 +1087,7 @@ function renderLibrary() {
 async function removeTrack(id) {
   const t = state.tracks.find((x) => x.id === id);
   if (!t) return;
-  if (mixer.decks.A.track?.id === id || mixer.decks.B.track?.id === id) {
+  if (DECKS.some((n) => mixer.decks[n].track?.id === id)) {
     return toast('That track is loaded on a deck.', 'error');
   }
   const web = t.source?.kind === 'web';
@@ -1104,10 +1122,10 @@ function setupLibrary() {
   body.addEventListener('dblclick', (e) => {
     const tr = e.target.closest('tr[data-id]');
     if (!tr || e.target.closest('button')) return;
-    // Double-click loads onto whichever deck is stopped (A first).
-    const target = !mixer.decks.A.playing ? 'A' : !mixer.decks.B.playing ? 'B' : null;
+    // Double-click loads onto the first deck that's stopped (A, B, then C, D).
+    const target = activeDecks().find((n) => !mixer.decks[n].playing);
     if (target) loadToDeck(target, tr.dataset.id);
-    else toast('Both decks are playing.', 'error');
+    else toast('Every deck is playing.', 'error');
   });
   body.addEventListener('dragstart', (e) => {
     const tr = e.target.closest('tr[data-id]');
@@ -1695,14 +1713,14 @@ function setupKeyboard() {
 
 // Themes. Canvas colours here must match each theme's --a / --b / --bg in styles.css.
 const THEMES = {
-  dark: { A: [255, 138, 61], B: [66, 182, 255], ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] },
-  aloe: { A: [228, 87, 46], B: [28, 127, 196], ink: '18,48,28', shade: '251,254,251', hi: [96, 130, 108] },
-  cherry: { A: [255, 59, 92], B: [255, 163, 192], ink: '253,238,242', shade: '39,16,26', hi: [214, 168, 182] },
+  dark: { A: [255, 138, 61], B: [66, 182, 255], C: [181, 123, 255], D: [163, 230, 53], ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] },
+  aloe: { A: [228, 87, 46], B: [28, 127, 196], C: [123, 79, 214], D: [77, 143, 16], ink: '18,48,28', shade: '251,254,251', hi: [96, 130, 108] },
+  cherry: { A: [255, 59, 92], B: [255, 163, 192], C: [201, 160, 255], D: [255, 209, 102], ink: '253,238,242', shade: '39,16,26', hi: [214, 168, 182] },
 };
 function setTheme(name) {
   const t = THEMES[name] ? name : 'dark';
   document.body.dataset.theme = t;
-  Object.assign(ACCENT, { A: THEMES[t].A, B: THEMES[t].B });
+  for (const n of DECKS) ACCENT[n] = THEMES[t][n];
   Object.assign(INK, { ink: THEMES[t].ink, shade: THEMES[t].shade, hi: THEMES[t].hi });
   DECKS.forEach((n) => (state.overviewImg[n] = null)); // redraw overviews in the new colours
   $$('.theme-card').forEach((c) => c.setAttribute('aria-checked', String(c.dataset.theme === t)));
@@ -1711,10 +1729,85 @@ function setTheme(name) {
     localStorage.removeItem('bg'); // old background-picture setting (could be MBs)
   } catch {}
 }
+/** 2 or 4 decks. Going back to 2 stops C and D (they'd keep playing out of sight). */
+function setDeckCount(n) {
+  const four = n === 4;
+  document.body.classList.toggle('decks-4', four);
+  $$('#deckCountSeg button').forEach((b) => {
+    const on = Number(b.dataset.decks) === (four ? 4 : 2);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-checked', String(on));
+  });
+  if (!four) for (const name of ['C', 'D']) if (mixer.decks[name].playing) mixer.decks[name].pause();
+  renderLibrary();
+  try {
+    localStorage.setItem('deckCount', four ? '4' : '2');
+  } catch {}
+}
+
 function setupSettings() {
   const dlg = $('#settingsDialog');
   $('#settingsBtn').addEventListener('click', () => dlg.showModal());
   $$('.theme-card').forEach((c) => c.addEventListener('click', () => setTheme(c.dataset.theme)));
+  $$('#deckCountSeg button').forEach((b) => b.addEventListener('click', () => setDeckCount(Number(b.dataset.decks))));
+
+  // Master volume: the same value as the top-bar slider, kept in step both ways.
+  const top = $('#masterVol');
+  const vol = $('#setVolume');
+  vol.value = top.value;
+  vol.addEventListener('input', () => {
+    top.value = vol.value;
+    top.dispatchEvent(new Event('input'));
+  });
+  top.addEventListener('input', () => (vol.value = top.value));
+
+  // Fullscreen (also F11).
+  const fs = $('#setFullscreen');
+  const toggleFs = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
+  fs.addEventListener('click', toggleFs);
+  document.addEventListener('fullscreenchange', () => (fs.textContent = document.fullscreenElement ? 'Exit fullscreen (F11)' : 'Enter fullscreen (F11)'));
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'F11') {
+      e.preventDefault();
+      toggleFs();
+    }
+  });
+
+  // Output device: AudioContext.setSinkId routes the whole mix (decks + SFX).
+  const out = $('#setOutput');
+  const listOutputs = async () => {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    const current = out.value;
+    out.innerHTML = '<option value="">System default</option>' + devices.map((d, i) => `<option value="${escapeHtml(d.deviceId)}">${escapeHtml(d.label || `Output ${i + 1}`)}</option>`).join('');
+    out.value = [...out.options].some((o) => o.value === current) ? current : '';
+  };
+  const useOutput = async (id) => {
+    try {
+      await mixer.ctx.setSinkId(id);
+      localStorage.setItem('outputDevice', id);
+    } catch (err) {
+      toast(`Couldn't switch output: ${cleanErr(err)}`, 'error');
+      out.value = '';
+    }
+  };
+  out.addEventListener('change', () => useOutput(out.value));
+  navigator.mediaDevices.addEventListener('devicechange', listOutputs);
+  $('#settingsBtn').addEventListener('click', listOutputs);
+  listOutputs().then(() => {
+    let saved = '';
+    try {
+      saved = localStorage.getItem('outputDevice') || '';
+    } catch {}
+    if (saved && [...out.options].some((o) => o.value === saved)) {
+      out.value = saved;
+      useOutput(saved);
+    }
+  });
+  try {
+    setDeckCount(localStorage.getItem('deckCount') === '4' ? 4 : 2);
+  } catch {
+    setDeckCount(2);
+  }
   let saved = 'dark';
   try {
     saved = localStorage.getItem('theme') || 'dark';
