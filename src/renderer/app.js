@@ -1,6 +1,6 @@
 // Commons DJ — UI
 import { Mixer, peakDb, STEMS, AI_STEM_NAMES } from './engine.js';
-import { mixToMono, computeWaveform, overview, detectTempo, detectKey, keyName, camelot, transposeKey } from './analysis.js';
+import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey } from './analysis.js';
 
 const api = window.cdj;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -8,9 +8,9 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const mixer = new Mixer();
 const DECKS = ['A', 'B'];
-// Canvas colours, read from the current theme's CSS variables (see setTheme).
-const ACCENT = { A: [255, 159, 67], B: [60, 200, 245] };
-const INK = { ink: '255,255,255', shade: '11,12,14', hi: [170, 182, 196] };
+// Canvas colours. ACCENT matches --a / --b and shade matches --bg in styles.css.
+const ACCENT = { A: [255, 138, 61], B: [66, 182, 255] };
+const INK = { ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] };
 const HOTCUE_COLORS = ['#ff5c6c', '#42d392', '#8b7bff', '#ffd24d'];
 
 const state = {
@@ -202,7 +202,11 @@ function buildDeck(name) {
     keyMatch: $('.key-match', root),
     stems: $$('.stem', root),
     stemLabel: $('.stemrow .label', root),
+    meter: $('.meter', root),
+    barpos: $('.barpos', root),
+    vinyl: $('.vinyl', root),
   };
+  $('.vinyl-label', root).textContent = name;
   ui[name] = d;
 
   d.play.addEventListener('click', () => {
@@ -251,6 +255,7 @@ function buildDeck(name) {
   $('.half', root).addEventListener('click', () => scaleBpm(name, 0.5));
   $('.double', root).addEventListener('click', () => scaleBpm(name, 2));
   $('.beat-here', root).addEventListener('click', () => beatHere(name));
+  d.meter.addEventListener('click', () => cycleMeter(name));
   setupTap(name);
 
   // Key: shift in semitones without touching tempo, key lock, match the other deck.
@@ -333,6 +338,7 @@ function renderTempo(name) {
   const d = ui[name];
   const pct = (deck.rate - 1) * 100;
   d.rate.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+  d.meter.textContent = `${deck.bars?.beatsPerBar || 4}/4`;
   if (deck.bpm) {
     d.bpmEff.textContent = deck.effectiveBpm.toFixed(1);
     d.bpmTrack.textContent = `${Number(deck.bpm).toFixed(1)} track`;
@@ -360,6 +366,8 @@ function doSync(name) {
   if (!deck.track || !other.track) return toast('Load tracks on both decks to sync.');
   if (!deck.bpm || !other.bpm) return toast('Both tracks need a BPM — try TAP to set one.');
   if (!deck.syncTo(other)) return toast('Tempos are too far apart to sync.', 'error');
+  if (deck.lastSync === 'beat' && deck.bars && other.bars && deck.bars.beatsPerBar !== other.bars.beatsPerBar)
+    toast(`Synced beats only — deck ${name} is in ${deck.bars.beatsPerBar}/4, the other in ${other.bars.beatsPerBar}/4.`);
   ui[name].sync.classList.add('on');
   setTimeout(() => ui[name].sync.classList.remove('on'), 500);
 }
@@ -547,8 +555,15 @@ function beatHere(name) {
   if (!t?.bpm) return toast('Set a BPM first (TAP along with the beat).');
   const period = 60 / t.bpm;
   const offset = ((deck.position % period) + period) % period;
-  saveTrack(t, { beatOffset: offset });
-  toast(`Beat grid moved on deck ${name}.`);
+  saveTrack(t, { beatOffset: offset, downbeat: offset });
+  toast(`Deck ${name}: the playhead is now beat 1 of the bar.`);
+}
+
+function cycleMeter(name) {
+  const t = mixer.decks[name].track;
+  if (!t?.bpm) return;
+  saveTrack(t, { beatsPerBar: (t.beatsPerBar || 4) === 4 ? 3 : 4 });
+  renderTempo(name);
 }
 
 function setupTap(name) {
@@ -574,7 +589,9 @@ function setupTap(name) {
       const bpm = Math.round((tapped / deck.rate) * 10) / 10;
       const period = 60 / bpm;
       const offset = ((deck.position % period) + period) % period;
-      saveTrack(deck.track, { bpm, beatOffset: offset });
+      // Taps mark beats, not beat 1: keep the old bar start, moved onto the nearest new beat.
+      const old = deck.track.downbeat ?? offset;
+      saveTrack(deck.track, { bpm, beatOffset: offset, downbeat: offset + Math.round((old - offset) / period) * period });
       renderTempo(name);
       renderLibrary();
     }
@@ -617,6 +634,15 @@ async function loadToDeck(name, trackId) {
       } else {
         patch.bpm = 0; // analysed, no clear beat
       }
+    }
+    const bpm = patch.bpm ?? track.bpm;
+    const beatOffset = patch.beatOffset ?? track.beatOffset;
+    if (track.beatsPerBar == null && bpm && beatOffset != null) {
+      d.artist.textContent = 'Finding the bars…';
+      await new Promise((r) => setTimeout(r, 0));
+      const meter = detectMeter(mono, buffer.sampleRate, bpm, beatOffset);
+      patch.beatsPerBar = meter?.beatsPerBar ?? 4;
+      patch.downbeat = meter ? meter.downbeat : beatOffset;
     }
     if (track.key == null) {
       d.artist.textContent = 'Analyzing key…';
@@ -795,7 +821,8 @@ function drawScrolling(name) {
         const bt = t.beatOffset + n * period;
         if (bt < 0) continue;
         const x = Math.round(cx + (bt - pos) * pps) + 0.5;
-        const bar = n % 4 === 0;
+        const bars = deck.bars;
+        const bar = Math.round((bt - bars.downbeat) / period) % bars.beatsPerBar === 0;
         ctx.fillStyle = `rgba(${INK.ink},${bar ? 0.55 : 0.22})`;
         const len = (bar ? 9 : 5) * dpr;
         ctx.fillRect(x, 0, dpr, len);
@@ -899,6 +926,8 @@ function setMeter(el, db, key) {
   }
 }
 
+const SECONDS_PER_TURN = 60 / (100 / 3);
+
 function frame() {
   for (const name of DECKS) {
     const deck = mixer.decks[name];
@@ -911,6 +940,14 @@ function frame() {
       d.elapsed.textContent = fmtTime(pos, true);
       d.remain.textContent = fmtTime(-remain, true);
       d.remain.classList.toggle('ending', deck.playing && remain < 30);
+      // 33⅓ rpm: one turn of the record is 1.8 s of track, so it spins with the tempo.
+      d.vinyl.style.transform = `rotate(${((pos / SECONDS_PER_TURN) % 1) * 360}deg)`;
+      const bars = deck.bars;
+      if (bars) {
+        const beats = Math.floor((pos - bars.downbeat) / (60 / deck.bpm) + 1e-6);
+        const n = bars.beatsPerBar;
+        d.barpos.textContent = `bar ${Math.floor(beats / n) + 1} · ${'●'.repeat(((beats % n) + n) % n + 1)}${'○'.repeat(n - 1 - (((beats % n) + n) % n))}`;
+      } else d.barpos.textContent = '';
     } else {
       d.elapsed.textContent = '0:00.0';
       d.remain.textContent = '−0:00.0';
@@ -1097,13 +1134,13 @@ function renderCcInfo(s) {
   const live = s.results.filter((r) => !r.duration).length;
   el.innerHTML = `
     <div class="row">
-      <span>“<b>${escapeHtml(s.query)}</b>” on YouTube</span>
+      <span>“<b>${escapeHtml(s.query)}</b>” on ${state.source === 'spotify' ? 'Spotify' : 'YouTube'}</span>
       <span>showing <b>${s.results.length}</b> of <b>${s.received}</b> returned (limit ${s.limit})</span>
       ${long ? `<span class="warn">${long} over 20 min</span>` : ''}
       ${live ? `<span class="warn">${live} live / no length</span>` : ''}
       ${s.dropped.length ? `<span class="warn">${s.dropped.length} hidden</span>` : ''}
       <span>${(s.ms / 1000).toFixed(1)}s</span>
-      <a class="open" data-url="${escapeHtml(s.url)}">Open on YouTube to compare</a>
+      <a class="open" data-url="${escapeHtml(s.url)}">Open on ${state.source === 'spotify' ? 'Spotify' : 'YouTube'} to compare</a>
     </div>
     <details>
       <summary>Details</summary>
@@ -1116,8 +1153,8 @@ function renderCcInfo(s) {
 
 function renderCcResults() {
   $('#ccResults').innerHTML = state.ccResults
-    .map((r) => `
-      <div class="cc-item" data-vid="${escapeHtml(r.id)}">
+    .map((r, i) => `
+      <div class="cc-item" data-vid="${escapeHtml(r.id)}" data-i="${i}">
         <div class="thumb-wrap">
           ${r.thumbnail ? `<img src="${escapeHtml(r.thumbnail)}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : '<div class="thumb"></div>'}
           ${r.rank ? `<span class="rank">#${r.rank}</span>` : ''}
@@ -1126,7 +1163,7 @@ function renderCcResults() {
         <div class="meta">
           <div class="ttl" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</div>
           <div class="sub">${escapeHtml(r.channel)} · <a class="open" data-url="${escapeHtml(r.url)}">open</a></div>
-          <div class="vid">${escapeHtml(r.id)}</div>
+          <div class="vid">${escapeHtml(r.album || r.id)}</div>
           <div class="msg"></div>
         </div>
         <button class="btn ${r.inLibrary ? '' : 'primary'}" data-get="${escapeHtml(r.url)}" ${r.inLibrary ? 'disabled' : ''}>${r.inLibrary ? 'In library' : 'Add'}</button>
@@ -1135,16 +1172,17 @@ function renderCcResults() {
     .join('');
 }
 
-async function startDownload(url, itemEl) {
+// `target` is a link (YouTube etc.) or a Spotify search result, which gets matched to a YouTube upload.
+async function startDownload(target, itemEl) {
   const id = jobId();
   const btn = itemEl ? $('[data-get]', itemEl) : null;
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'Fetching…';
   }
-  state.jobs.set(id, { el: itemEl, url });
+  state.jobs.set(id, { el: itemEl, url: target.url || target });
   try {
-    await api.cc.download(url, id);
+    await (typeof target === 'string' ? api.cc.download(target, id) : api.spotify.download(target, id));
   } catch {
     // progress handler already reported the error
   } finally {
@@ -1195,18 +1233,65 @@ function onDownloadProgress(p) {
   }
 }
 
+const SPOTIFY_TRACK_LINK = /^(https?:\/\/open\.spotify\.com\/(intl-[a-z-]+\/)?track\/|spotify:track:)/;
+
+async function setSource(source) {
+  state.source = source;
+  $$('#sourceSeg button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.source === source);
+    b.setAttribute('aria-checked', String(b.dataset.source === source));
+  });
+  const sp = source === 'spotify';
+  $('#ccQuery').placeholder = sp ? 'Search Spotify — song, artist or album' : 'Search YouTube — try “lofi beat”, “house loop”, “funk breakbeat”';
+  $('#spotifyKeys').hidden = !sp || (await api.spotify.hasKeys());
+  state.ccResults = [];
+  renderCcResults();
+  renderCcInfo(null);
+  setCcStatus('');
+  try {
+    localStorage.setItem('searchSource', source);
+  } catch {}
+}
+
 function setupCc() {
   api.cc.onProgress(onDownloadProgress);
+
+  $('#sourceSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-source]');
+    if (b && b.dataset.source !== state.source) setSource(b.dataset.source);
+  });
+  let saved = 'youtube';
+  try {
+    saved = localStorage.getItem('searchSource') === 'spotify' ? 'spotify' : 'youtube';
+  } catch {}
+  setSource(saved);
+
+  $('#spotifyKeys').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api.spotify.setKeys($('#spClientId').value, $('#spClientSecret').value);
+      $('#spClientSecret').value = '';
+      $('#spotifyKeys').hidden = true;
+      toast('Spotify key saved.');
+    } catch (err) {
+      toast(cleanErr(err), 'error');
+    }
+  });
+  $('#spotifyKeys').addEventListener('click', (e) => {
+    const open = e.target.closest('a.open');
+    if (open) api.openExternal(open.dataset.url);
+  });
 
   $('#ccSearchForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const q = $('#ccQuery').value.trim();
     if (!q) return;
-    setCcStatus(`Searching YouTube for “${q}”…`);
+    const sp = state.source === 'spotify';
+    setCcStatus(`Searching ${sp ? 'Spotify' : 'YouTube'} for “${q}”…`);
     $('#ccResults').innerHTML = '';
     renderCcInfo(null);
     try {
-      const search = await api.cc.search(q);
+      const search = await (sp ? api.spotify.search(q) : api.cc.search(q));
       state.ccResults = search.results;
       setCcStatus(state.ccResults.length ? '' : 'No results. Try broader words.');
       renderCcInfo(search);
@@ -1222,13 +1307,24 @@ function setupCc() {
     const url = $('#ccLink').value.trim();
     if (!url) return;
     $('#ccLink').value = '';
+    if (SPOTIFY_TRACK_LINK.test(url)) {
+      // Show the Spotify track as a result card; its Add button does the YouTube match.
+      setSource('spotify').then(() => {
+        $('#ccQuery').value = url;
+        $('#ccSearchForm').requestSubmit();
+      });
+      return;
+    }
     setCcStatus('Fetching video info…');
     startDownload(url, null);
   });
 
   $('#ccResults').addEventListener('click', (e) => {
     const get = e.target.closest('[data-get]');
-    if (get && !get.disabled) return startDownload(get.dataset.get, get.closest('.cc-item'));
+    if (get && !get.disabled) {
+      const item = get.closest('.cc-item');
+      return startDownload(state.source === 'spotify' ? state.ccResults[item.dataset.i] : get.dataset.get, item);
+    }
     const open = e.target.closest('a.open');
     if (open) api.openExternal(open.dataset.url);
   });
@@ -1312,8 +1408,102 @@ function setupTabs() {
 }
 
 function setupZoom() {
-  $('#zoomIn').addEventListener('click', () => (state.zoom = Math.min(400, state.zoom * 1.4)));
-  $('#zoomOut').addEventListener('click', () => (state.zoom = Math.max(25, state.zoom / 1.4)));
+  // Zoom eases toward its target instead of jumping.
+  let target = state.zoom;
+  const ease = () => {
+    state.zoom += (target - state.zoom) * 0.25;
+    if (Math.abs(target - state.zoom) > 0.5) requestAnimationFrame(ease);
+    else state.zoom = target;
+  };
+  const zoomBy = (f) => {
+    const settled = Math.abs(target - state.zoom) <= 0.5;
+    target = Math.max(25, Math.min(400, target * f));
+    if (settled) requestAnimationFrame(ease);
+  };
+  $('#zoomIn').addEventListener('click', () => zoomBy(1.4));
+  $('#zoomOut').addEventListener('click', () => zoomBy(1 / 1.4));
+
+  // Grab a waveform or a record to scratch: playback stops under your hand, the
+  // track plays at the speed and direction you move it, and picks up where you
+  // let go. A paused deck keeps gliding after a flick.
+  // Wheel / trackpad scrolls the track; Ctrl + wheel zooms.
+  DECKS.forEach((name) => {
+    const canvas = $(`#wave${name}`);
+    const deck = mixer.decks[name];
+    const secPerPx = () => deck.rate / state.zoom; // track-seconds per CSS pixel
+
+    // Shared hand: `toPos(e)` maps a pointer event to a track position.
+    const grabbable = (el, start, toPos) => {
+      let drag = null;
+      let glide = 0;
+      el.addEventListener('pointerdown', (e) => {
+        if (!deck.buffer || e.button !== 0) return;
+        cancelAnimationFrame(glide);
+        el.setPointerCapture(e.pointerId);
+        mixer.resume();
+        drag = { ...start(e), wasPlaying: deck.scratchStart(), v: 0, t: e.timeStamp, last: deck.position };
+        el.classList.add('grabbing');
+      });
+      el.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const pos = toPos(e, drag);
+        const dt = Math.max(1, e.timeStamp - drag.t);
+        drag.v = 0.7 * drag.v + 0.3 * ((pos - drag.last) / dt); // track-seconds per ms, smoothed
+        drag.t = e.timeStamp;
+        drag.last = pos;
+        deck.scratchTo(pos);
+      });
+      const release = (e) => {
+        if (!drag) return;
+        const { wasPlaying, v, t } = drag;
+        drag = null;
+        el.classList.remove('grabbing');
+        // Flick on a paused deck: keep moving with friction. Holding still before letting go means no glide.
+        let vel = wasPlaying || e.timeStamp - t > 80 ? 0 : v * 16; // track-seconds per frame
+        const step = () => {
+          vel *= 0.92;
+          if (Math.abs(vel) < 0.002 || deck.playing || !deck.scratching) return deck.scratchEnd(false);
+          deck.scratchTo(deck.position + vel);
+          glide = requestAnimationFrame(step);
+        };
+        if (vel) glide = requestAnimationFrame(step);
+        else deck.scratchEnd(wasPlaying);
+      };
+      el.addEventListener('pointerup', release);
+      el.addEventListener('pointercancel', release);
+    };
+
+    // Waveform: the track moves with your hand, left = forwards.
+    grabbable(canvas, (e) => ({ x: e.clientX, pos: deck.position }), (e, d) => d.pos - (e.clientX - d.x) * secPerPx());
+
+    // Record: turning it clockwise plays forwards, one turn = 1.8 s of track (33⅓ rpm).
+    const platter = $(`#deck${name} .platter`);
+    const angle = (e) => {
+      const r = platter.getBoundingClientRect();
+      return Math.atan2(e.clientY - (r.top + r.height / 2), e.clientX - (r.left + r.width / 2));
+    };
+    grabbable(
+      platter,
+      (e) => ({ a: angle(e), turned: 0, pos: deck.position }),
+      (e, d) => {
+        const a = angle(e);
+        let da = a - d.a;
+        if (da > Math.PI) da -= 2 * Math.PI; // unwrap across ±180°
+        if (da < -Math.PI) da += 2 * Math.PI;
+        d.a = a;
+        d.turned += da;
+        return d.pos + (d.turned / (2 * Math.PI)) * SECONDS_PER_TURN;
+      },
+    );
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      if (e.ctrlKey) return zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      if (!deck.buffer) return;
+      const px = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      deck.seek(deck.position + px * secPerPx());
+    }, { passive: false });
+  });
 }
 
 // ------------------------------------------------------------------ keyboard
@@ -1370,58 +1560,11 @@ function setupKeyboard() {
 
 // ------------------------------------------------------------------ boot
 
-function setTheme(name) {
-  document.body.dataset.theme = name;
-  const css = getComputedStyle(document.body);
-  const rgb = (v) => css.getPropertyValue(v).trim();
-  INK.ink = rgb('--ink-rgb');
-  INK.shade = rgb('--shade-rgb');
-  INK.hi = rgb('--wave-hi-rgb').split(',').map(Number);
-  ACCENT.A = rgb('--a-rgb').split(',').map(Number);
-  ACCENT.B = rgb('--b-rgb').split(',').map(Number);
-  DECKS.forEach((n) => (state.overviewImg[n] = null)); // redraw overviews in the new colours
-  try {
-    localStorage.setItem('theme', name);
-  } catch {}
-}
-{
-  let saved = 'light';
-  try {
-    saved = localStorage.getItem('theme') || 'light';
-  } catch {}
-  $('#themeSel').value = saved;
-  setTheme(saved);
-  $('#themeSel').addEventListener('change', (e) => setTheme(e.target.value));
-
-  // Optional background picture of the user's choosing.
-  // shortcut: stored as a data URL in localStorage (~5 MB cap), move to the app data folder if bigger images are needed.
-  const applyBg = (url) => document.body.style.setProperty('--user-bg', url ? `url("${url}")` : 'none');
-  try {
-    applyBg(localStorage.getItem('bg'));
-  } catch {}
-  $('#bgBtn').addEventListener('click', () => $('#bgFile').click());
-  $('#bgBtn').addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    applyBg(null);
-    try {
-      localStorage.removeItem('bg');
-    } catch {}
-  });
-  $('#bgFile').addEventListener('change', () => {
-    const file = $('#bgFile').files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      applyBg(reader.result);
-      try {
-        localStorage.setItem('bg', reader.result);
-      } catch {
-        toast('Picture is too big to remember after restart — it shows for now.', 'error');
-      }
-    };
-    reader.readAsDataURL(file);
-  });
-}
+// Drop settings left by the old theme picker / background picture (the picture could be MBs).
+try {
+  localStorage.removeItem('theme');
+  localStorage.removeItem('bg');
+} catch {}
 
 DECKS.forEach(buildDeck);
 buildMixer();

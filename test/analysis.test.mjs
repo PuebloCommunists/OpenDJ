@@ -1,4 +1,4 @@
-import { detectTempo, computeWaveform, overview, mixToMono, beatPhase, detectKey, keyName, camelot, transposeKey } from '../src/renderer/analysis.js';
+import { detectTempo, detectMeter, computeWaveform, overview, mixToMono, beatPhase, detectKey, keyName, camelot, transposeKey } from '../src/renderer/analysis.js';
 const sr = 44100;
 let seed = 1; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
 function synth({ bpm, offset, seconds, pattern, drone = true }) {
@@ -103,6 +103,43 @@ for (const [k, want] of camelotChecks) {
   const ok = keyName(transposeKey(9 + 12, 2)) === 'Bm' && keyName(transposeKey(0, -1)) === 'B';
   if (!ok) fails++;
   console.log(`${ok ? 'PASS' : 'FAIL'} transpose Am +2 = ${keyName(transposeKey(21, 2))}, C -1 = ${keyName(transposeKey(0, -1))}`);
+}
+
+// --- time signature / downbeat: bass line moves on beat 1, kick a bit harder on beat 1
+function barTrack({ bpm, offset, meter, barStart, seconds = 120 }) {
+  const notes = [41, 36, 43, 38]; // bass notes, one per bar (MIDI)
+  const buf = synth({
+    bpm, offset, seconds, drone: false,
+    pattern: (b, t, beat, add) => {
+      const inBar = (((b - barStart) % meter) + meter) % meter;
+      if (meter === 4) { add(t, 'kick'); add(t + beat / 2, 'hat'); if (inBar % 2) add(t, 'snare'); }
+      else { if (inBar === 0) add(t, 'kick'); else add(t, 'snare'); add(t + beat / 2, 'hat'); }
+      if (inBar === 0) add(t, 'kick');
+    },
+  });
+  const beat = 60 / bpm;
+  for (let i = 0; i < buf.length; i++) {
+    const t = i / sr;
+    const b = Math.floor((t - offset) / beat);
+    if (b < 0) continue;
+    const barIdx = Math.floor((b - barStart) / meter);
+    buf[i] += Math.sin(2 * Math.PI * midiHz(notes[((barIdx % 4) + 4) % 4]) * t) * 0.15;
+  }
+  return buf;
+}
+const meterCases = [
+  { name: '4/4, bar on beat 1', bpm: 124, offset: 0.2, meter: 4, barStart: 0 },
+  { name: '4/4, bar on beat 3', bpm: 126, offset: 0.1, meter: 4, barStart: 2 },
+  { name: '4/4, bar on beat 2', bpm: 120, offset: 0.3, meter: 4, barStart: 1 },
+  { name: '3/4 waltz', bpm: 132, offset: 0.15, meter: 3, barStart: 1 },
+];
+for (const c of meterCases) {
+  const r = detectMeter(barTrack(c), sr, c.bpm, c.offset);
+  const bar = (c.meter * 60) / c.bpm;
+  const want = (((c.offset + c.barStart * 60 / c.bpm) % bar) + bar) % bar;
+  const ok = r && r.beatsPerBar === c.meter && Math.abs(r.downbeat - want) < 0.02;
+  if (!ok) fails++;
+  console.log(`${ok ? 'PASS' : 'FAIL'} meter ${c.name}: got ${r ? `${r.beatsPerBar}/4, downbeat ${r.downbeat.toFixed(3)} (want ${want.toFixed(3)}), conf ${r.confidence.toFixed(2)}` : 'none'}`);
 }
 
 const mono = mixToMono([new Float32Array(sr*10).fill(0.5), new Float32Array(sr*10).fill(-0.5)]);

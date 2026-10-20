@@ -43,6 +43,10 @@ export class Mixer {
         console.error('Key shift / stems unavailable:', err);
         return false;
       });
+    this.ctx.audioWorklet
+      .addModule(new URL('./scratch.worklet.js', import.meta.url))
+      .then(() => Object.values(this.decks).forEach((d) => d.attachScratch()))
+      .catch((err) => console.error('Scratch sound unavailable:', err));
   }
 
   resume() {
@@ -176,6 +180,50 @@ export class Deck {
     this.emit('fx');
   }
 
+  attachScratch() {
+    this.scratchNode = new AudioWorkletNode(this.ctx, 'scratch', { numberOfInputs: 0, outputChannelCount: [2] });
+    this.scratchNode.connect(this.bus); // through key shift, EQ and faders like normal playback
+    if (this.buffer) this.sendScratchBuffer();
+  }
+
+  sendScratchBuffer() {
+    // shortcut: copies the decoded track into the worklet (2× its RAM), use a SharedArrayBuffer if memory gets tight.
+    const channels = [];
+    for (let c = 0; c < this.buffer.numberOfChannels; c++) channels.push(this.buffer.getChannelData(c).slice());
+    this.scratchNode.port.postMessage({ type: 'load', channels }, channels.map((a) => a.buffer));
+  }
+
+  /** Hand on the record: playback stops, the scratch voice follows scratchTo(). Returns whether it was playing. */
+  scratchStart() {
+    const wasPlaying = this.playing;
+    this.pause();
+    this.scratching = true;
+    this.scratchNode?.port.postMessage({ type: 'start', pos: this.pausedPos });
+    return wasPlaying;
+  }
+
+  scratchTo(t) {
+    if (!this.buffer) return;
+    this.pausedPos = Math.max(0, Math.min(t, this.duration));
+    this.scratchNode?.port.postMessage({ type: 'target', pos: this.pausedPos });
+  }
+
+  scratchEnd(resume) {
+    if (!this.scratching) return;
+    this.scratching = false;
+    this.scratchNode?.port.postMessage({ type: 'stop' });
+    if (this.loop && (this.pausedPos < this.loop.start || this.pausedPos >= this.loop.end)) this.loop = null;
+    if (resume) this.play();
+    else this.emit('seek');
+  }
+
+  /** Bar grid: { beatsPerBar, downbeat } with fallbacks for tracks analysed before bars existed. */
+  get bars() {
+    const t = this.track;
+    if (!t?.bpm || t.beatOffset == null) return null;
+    return { beatsPerBar: t.beatsPerBar || 4, downbeat: t.downbeat ?? t.beatOffset };
+  }
+
   /** Pitch change the fx node applies on top of playback speed. */
   get pitchFactor() {
     return 2 ** (this.keyShift / 12) / (this.keyLock ? this.rate : 1);
@@ -300,6 +348,7 @@ export class Deck {
     this.aiStems = null;
     this.applyAiGains();
     this.sendFx();
+    if (this.scratchNode) this.sendScratchBuffer();
     this.emit('load');
   }
 
@@ -478,7 +527,10 @@ export class Deck {
     this.emit('loop');
   }
 
-  /** Match tempo (and beat phase, when both grids are known) to another deck. */
+  /**
+   * Match tempo, then line up the grids: whole bars (beat 1 on beat 1) when both
+   * decks are in the same time signature at the same tempo octave, beats otherwise.
+   */
   syncTo(other) {
     if (!this.bpm || !other.effectiveBpm) return false;
     let target = other.effectiveBpm;
@@ -489,16 +541,24 @@ export class Deck {
     if (rate < 0.5 || rate > 1.5) return false;
     this.setRate(rate);
 
-    if (this.track.beatOffset != null && other.track?.beatOffset != null && other.bpm) {
-      // Express the other deck's beat position on this deck's grid.
+    const mine = this.bars;
+    const theirs = other.bars;
+    if (mine && theirs && other.bpm) {
       const scale = target / other.effectiveBpm; // 1, 2 or 0.5
-      const otherBeats = (other.position - other.track.beatOffset) / (60 / other.bpm);
-      const phaseOther = frac(otherBeats * scale);
-      const phaseMe = frac((this.position - this.track.beatOffset) / (60 / this.bpm));
+      // Unit = one bar when the bars can match, one beat otherwise.
+      const byBar = scale === 1 && mine.beatsPerBar === theirs.beatsPerBar;
+      const unitMe = (60 / this.bpm) * (byBar ? mine.beatsPerBar : 1);
+      const unitOther = (60 / other.bpm) * (byBar ? theirs.beatsPerBar : 1);
+      const refMe = byBar ? mine.downbeat : this.track.beatOffset;
+      const refOther = byBar ? theirs.downbeat : other.track.beatOffset;
+      // Express the other deck's position on this deck's grid.
+      const phaseOther = frac(((other.position - refOther) / unitOther) * (byBar ? 1 : scale));
+      const phaseMe = frac((this.position - refMe) / unitMe);
       let diff = phaseOther - phaseMe;
       if (diff > 0.5) diff -= 1;
       if (diff < -0.5) diff += 1;
-      const shift = diff * (60 / this.bpm);
+      const shift = diff * unitMe;
+      this.lastSync = byBar ? 'bar' : 'beat';
       if (Math.abs(shift) > 0.002) {
         if (this.playing) {
           this.loop = null;

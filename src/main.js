@@ -3,7 +3,7 @@
 // The renderer never touches the filesystem or spawns processes directly;
 // everything goes through the IPC handlers below.
 
-const { app, BrowserWindow, ipcMain, dialog, shell, net, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, net, Menu, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const fsp = fs.promises;
@@ -237,6 +237,118 @@ async function searchCreativeCommons(query) {
   return { ...info, received: raw.length, dropped, results, ms: Date.now() - started };
 }
 
+// ---------------------------------------------------------------- Spotify (catalog search only)
+// Spotify is used for search and metadata through its public Web API. The
+// audio itself comes from the closest YouTube upload (see spotifyMatch).
+
+const spotifyKeysFile = () => path.join(paths.root, 'spotify-keys.bin');
+let spotifyToken = null; // { value, expires }
+
+function readSpotifyKeys() {
+  try {
+    const buf = fs.readFileSync(spotifyKeysFile());
+    return JSON.parse(safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(buf) : buf.toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function saveSpotifyKeys(clientId, clientSecret) {
+  const id = String(clientId || '').trim();
+  const secret = String(clientSecret || '').trim();
+  if (!/^[0-9a-f]{32}$/i.test(id) || !/^[0-9a-f]{32}$/i.test(secret)) throw new Error('Client ID and secret are both 32-character codes from the Spotify developer dashboard.');
+  const json = JSON.stringify({ clientId: id, clientSecret: secret });
+  fs.writeFileSync(spotifyKeysFile(), safeStorage.isEncryptionAvailable() ? safeStorage.encryptString(json) : json);
+  spotifyToken = null;
+}
+
+async function spotifyApi(pathAndQuery) {
+  const keys = readSpotifyKeys();
+  if (!keys) throw new Error('Add your Spotify client ID and secret first.');
+  if (!spotifyToken || Date.now() > spotifyToken.expires) {
+    const res = await net.fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Basic ' + Buffer.from(`${keys.clientId}:${keys.clientSecret}`).toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: 'grant_type=client_credentials',
+    });
+    if (!res.ok) throw new Error(res.status === 400 || res.status === 401 ? 'Spotify rejected the client ID / secret.' : `Spotify sign-in failed (HTTP ${res.status}).`);
+    const t = await res.json();
+    spotifyToken = { value: t.access_token, expires: Date.now() + (t.expires_in - 60) * 1000 };
+  }
+  const res = await net.fetch(`https://api.spotify.com/v1/${pathAndQuery}`, { headers: { Authorization: `Bearer ${spotifyToken.value}` } });
+  if (res.status === 401) spotifyToken = null;
+  if (!res.ok) throw new Error(`Spotify request failed (HTTP ${res.status}).`);
+  return res.json();
+}
+
+function spotifyResult(t, i) {
+  const artists = (t.artists || []).map((a) => a.name).join(', ');
+  return {
+    rank: i + 1,
+    id: t.id,
+    title: t.name,
+    channel: artists,
+    artists,
+    album: t.album?.name || '',
+    isrc: t.external_ids?.isrc || '',
+    duration: t.duration_ms ? Math.round(t.duration_ms / 1000) : null,
+    url: t.external_urls?.spotify || `https://open.spotify.com/track/${t.id}`,
+    thumbnail: (t.album?.images || []).slice(-2)[0]?.url || null,
+    inLibrary: library.tracks.some((x) => x.source?.spotifyId === t.id),
+  };
+}
+
+// A pasted open.spotify.com/track/<id> link (or spotify:track:<id>) -> its id, else null.
+function spotifyTrackId(raw) {
+  const m = String(raw || '').trim().match(/^(?:https?:\/\/open\.spotify\.com\/(?:intl-[a-z-]+\/)?track\/|spotify:track:)([A-Za-z0-9]{22})/);
+  return m ? m[1] : null;
+}
+
+async function searchSpotify(query) {
+  const q = String(query || '').trim();
+  const info = { query: q, url: `https://open.spotify.com/search/${encodeURIComponent(q)}`, filter: 'Spotify catalog (tracks)', limit: SEARCH_LIMIT };
+  if (!q) return { ...info, received: 0, dropped: [], results: [], ms: 0 };
+  const started = Date.now();
+  const id = spotifyTrackId(q);
+  const items = id
+    ? [await spotifyApi(`tracks/${id}`)]
+    : (await spotifyApi(`search?type=track&limit=${SEARCH_LIMIT}&q=${encodeURIComponent(q)}`)).tracks?.items || [];
+  const results = items.filter(Boolean).map(spotifyResult);
+  return { ...info, received: items.length, dropped: [], results, ms: Date.now() - started };
+}
+
+// Picks the YouTube upload to download for a Spotify track: among the top 5
+// results for "artist - title", the first whose length is within 10 s of Spotify's.
+async function spotifyMatch(r) {
+  await ensureYtdlp();
+  const q = `${r.artists} - ${r.title}`;
+  const out = await runYtdlp(['--flat-playlist', '-J', `ytsearch5:${q}`]);
+  const entries = (JSON.parse(out).entries || []).filter((e) => e?.id);
+  if (!entries.length) throw new Error(`No YouTube upload found for “${q}”.`);
+  const best = (r.duration && entries.find((e) => e.duration && Math.abs(e.duration - r.duration) <= 10)) || entries[0];
+  return `https://www.youtube.com/watch?v=${best.id}`;
+}
+
+async function downloadSpotify(r, jobId) {
+  const send = (payload) => mainWindow?.webContents.send('download:progress', { jobId, ...payload });
+  let url;
+  try {
+    send({ stage: 'checking', message: 'Finding it on YouTube…' });
+    url = await spotifyMatch(r);
+  } catch (err) {
+    send({ stage: 'error', message: err.message });
+    throw err;
+  }
+  return downloadTrack({
+    url,
+    jobId,
+    meta: { title: r.title, artist: r.artists, source: { spotifyId: r.id, spotifyUrl: r.url, isrc: r.isrc || null } },
+  });
+}
+
 function validateUrl(raw) {
   let u;
   try {
@@ -253,7 +365,7 @@ async function fetchInfo(url) {
   return JSON.parse(out);
 }
 
-async function downloadTrack({ url, jobId }) {
+async function downloadTrack({ url, jobId, meta = null }) {
   const send = (payload) => mainWindow?.webContents.send('download:progress', { jobId, ...payload });
   const controller = new AbortController();
   activeDownloads.set(jobId, controller);
@@ -308,8 +420,8 @@ async function downloadTrack({ url, jobId }) {
 
     const track = {
       id: newId(),
-      title: info.track || info.title || info.id,
-      artist: info.artist || info.creator || info.channel || info.uploader || '',
+      title: meta?.title || info.track || info.title || info.id,
+      artist: meta?.artist || info.artist || info.creator || info.channel || info.uploader || '',
       file: finalPath,
       duration: info.duration || null,
       bpm: null,
@@ -326,6 +438,7 @@ async function downloadTrack({ url, jobId }) {
         // Recorded as reported, not checked (no-gate build).
         license: info.license || null,
         licenseCheckedBy: 'unchecked',
+        ...meta?.source,
       },
     };
     library.tracks.unshift(track);
@@ -469,7 +582,7 @@ function registerIpc() {
   ipcMain.handle('library:update', (_e, id, patch) => {
     const t = findTrack(id);
     if (!t) return null;
-    const allowed = ['title', 'artist', 'bpm', 'beatOffset', 'cues', 'duration', 'key'];
+    const allowed = ['title', 'artist', 'bpm', 'beatOffset', 'beatsPerBar', 'downbeat', 'cues', 'duration', 'key'];
     for (const key of allowed) if (key in patch) t[key] = patch[key];
     saveLibrary();
     return publicTrack(t);
@@ -513,6 +626,11 @@ function registerIpc() {
   ipcMain.handle('cc:search', (_e, query) => searchCreativeCommons(query));
 
   ipcMain.handle('cc:download', (_e, url, jobId) => downloadTrack({ url, jobId }));
+
+  ipcMain.handle('spotify:hasKeys', () => !!readSpotifyKeys());
+  ipcMain.handle('spotify:setKeys', (_e, id, secret) => saveSpotifyKeys(id, secret));
+  ipcMain.handle('spotify:search', (_e, query) => searchSpotify(query));
+  ipcMain.handle('spotify:download', (_e, result, jobId) => downloadSpotify(result, jobId));
 
   ipcMain.handle('cc:cancel', (_e, jobId) => {
     activeDownloads.get(jobId)?.abort();

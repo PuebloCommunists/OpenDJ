@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld('cdj', {
       return () => ipcRenderer.removeListener('download:progress', handler);
     },
   },
+  spotify: {
+    hasKeys: () => ipcRenderer.invoke('spotify:hasKeys'),
+    setKeys: (id, secret) => ipcRenderer.invoke('spotify:setKeys', id, secret),
+    search: (query) => ipcRenderer.invoke('spotify:search', query),
+    download: (result, jobId) => ipcRenderer.invoke('spotify:download', result, jobId),
+  },
   ytdlp: {
     status: () => ipcRenderer.invoke('ytdlp:status'),
     update: () => ipcRenderer.invoke('ytdlp:update'),

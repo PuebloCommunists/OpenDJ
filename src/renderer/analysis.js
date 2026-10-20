@@ -459,6 +459,94 @@ export function detectKey(mono, sampleRate) {
   return { key: best.key, confidence, scores: scores.slice(0, 4) };
 }
 
+/**
+ * Time signature and downbeat, given a beat grid. Each beat gets two cues for
+ * "this is beat 1": how hard the low end hits (kicks, crashes, bass entries)
+ * and how much the bass note changes (bass lines usually move on the bar).
+ * Returns { beatsPerBar: 3 | 4, downbeat, confidence }, downbeat being the
+ * first bar start in seconds, or null when the track is too short to tell.
+ */
+export function detectMeter(mono, sampleRate, bpm, offset) {
+  if (!bpm) return null;
+  const period = 60 / bpm;
+  const duration = mono.length / sampleRate;
+  const start = Math.min(30, duration * 0.15);
+  const first = Math.ceil((start - offset) / period);
+  const count = Math.min(Math.floor((Math.min(duration, start + 180) - offset) / period) - first, 256);
+  if (count < 24) return null;
+
+  // Bass only (two one-pole stages at 120 Hz), so snares and hats on 2 and 4 don't count.
+  const aLow = 1 - Math.exp((-2 * Math.PI * 120) / sampleRate);
+  const accent = new Float64Array(count); // rise in bass energy at the beat
+  const pitch = new Float64Array(count); // bass zero-crossing rate over the beat ≈ bass note
+  const w = Math.round(0.06 * sampleRate);
+  for (let j = 0; j < count; j++) {
+    const t = offset + (first + j) * period;
+    const i0 = Math.max(0, Math.round(t * sampleRate) - w);
+    const i1 = Math.min(mono.length, Math.round((t + period * 0.75) * sampleRate));
+    let lp1 = 0;
+    let lp2 = 0;
+    let prev = 0;
+    let zc = 0;
+    let before = 0;
+    let after = 0;
+    for (let i = i0; i < i1; i++) {
+      lp1 += aLow * (mono[i] - lp1);
+      lp2 += aLow * (lp1 - lp2);
+      const k = i - i0;
+      if (k < w) before += lp2 * lp2;
+      else if (k < 2 * w) after += lp2 * lp2;
+      if (k > 2 * w) {
+        if ((lp2 >= 0) !== (prev >= 0)) zc++;
+      }
+      prev = lp2;
+    }
+    accent[j] = Math.max(0, Math.log1p(1e4 * after / w) - Math.log1p(1e4 * before / w));
+    pitch[j] = zc;
+  }
+  const change = new Float64Array(count);
+  for (let j = 1; j < count; j++) change[j] = Math.abs(Math.log((pitch[j] + 1) / (pitch[j - 1] + 1)));
+  const norm = (a) => {
+    let m = 0;
+    for (const v of a) m += v;
+    m /= a.length;
+    return m > 0 ? a.map((v) => v / m) : a;
+  };
+  const a = norm(accent);
+  const c = norm(change);
+
+  // For each meter, the phase whose beats stand out most from the rest.
+  const contrast = (m) => {
+    let best = { k: 0, score: -Infinity };
+    const mean = (k) => {
+      let s = 0;
+      let n = 0;
+      for (let j = k; j < count; j += m) {
+        s += a[j] + c[j];
+        n++;
+      }
+      return n ? s / n : 0;
+    };
+    const means = Array.from({ length: m }, (_, k) => mean(k));
+    for (let k = 0; k < m; k++) {
+      const others = (means.reduce((x, y) => x + y, 0) - means[k]) / (m - 1);
+      const score = means[k] - others;
+      if (score > best.score) best = { k, score };
+    }
+    return best;
+  };
+  const four = contrast(4);
+  const three = contrast(3);
+  // Most dance music is 4/4: 3/4 has to win clearly.
+  const useThree = three.score > four.score * 1.3 && three.score > 0.15;
+  const m = useThree ? 3 : 4;
+  const win = useThree ? three : four;
+  const bar = m * period;
+  let downbeat = offset + (first + win.k) * period;
+  downbeat = ((downbeat % bar) + bar) % bar;
+  return { beatsPerBar: m, downbeat, confidence: Math.max(0, Math.min(1, win.score / 1.5)) };
+}
+
 /** Beat phase (0..1) at a given track position. */
 export function beatPhase(position, bpm, offset) {
   const period = 60 / bpm;
