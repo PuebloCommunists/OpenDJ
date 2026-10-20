@@ -1,0 +1,186 @@
+name: Release builds
+
+# Builds Windows x64, Windows ARM64 and macOS (universal) zips for a tag and
+# attaches them to that tag's GitHub Release (as a pre-release).
+# Run it by hand for an existing tag, or it runs on its own when a v* tag is pushed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build
+        required: true
+        default: v0.3.0-beta
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  APP_NAME: Commons DJ NoGate
+  # Same files left out as the package:win-* scripts in package.json.
+  PACKAGER_IGNORE: ^/(dist|out|vendor|test|scripts|node_modules|\.github)($|/)
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Package
+        run: |
+          node scripts/fetch-ytdlp.mjs win32 ${{ matrix.arch }}
+          npx electron-packager . "$APP_NAME" --platform=win32 --arch=${{ matrix.arch }} --out=dist --overwrite \
+            --icon=assets/icon.ico --extra-resource=vendor/win32-${{ matrix.arch }}/bin \
+            --ignore="$PACKAGER_IGNORE" --prune=false
+      - name: Check bundle
+        run: |
+          dir="dist/$APP_NAME-win32-${{ matrix.arch }}"
+          ls -la "$dir" "$dir/resources" "$dir/resources/bin"
+          test -f "$dir/$APP_NAME.exe"
+          if [ "${{ matrix.arch }}" = x64 ]; then "$dir/resources/bin/yt-dlp.exe" --version; else test -f "$dir/resources/bin/yt-dlp_arm64.exe"; fi
+      - name: Zip
+        run: |
+          version="${TAG#v}"
+          cd dist
+          7z a -tzip -mx=9 "../OpenDJ-$version-win-${{ matrix.arch }}.zip" "$APP_NAME-win32-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-${{ matrix.arch }}
+          path: OpenDJ-*.zip
+          if-no-files-found: error
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Make .icns icon
+        run: |
+          mkdir -p build/icon.iconset
+          for s in 16 32 128 256 512; do
+            sips -z $s $s assets/icon.png --out build/icon.iconset/icon_${s}x${s}.png
+            sips -z $((s*2)) $((s*2)) assets/icon.png --out build/icon.iconset/icon_${s}x${s}@2x.png
+          done
+          iconutil -c icns build/icon.iconset -o build/icon.icns
+      - name: Package (universal)
+        run: |
+          node scripts/fetch-ytdlp.mjs darwin arm64
+          chmod +x vendor/darwin-arm64/bin/yt-dlp_macos
+          npx electron-packager . "$APP_NAME" --platform=darwin --arch=universal --out=dist --overwrite \
+            --icon=build/icon.icns --extra-resource=vendor/darwin-arm64/bin \
+            --app-bundle-id=org.opendj.commonsdj-nogate --app-category-type=public.app-category.music \
+            --ignore="^/(dist|out|vendor|test|scripts|node_modules|build|\.github)($|/)" --prune=false
+      - name: Check bundle
+        run: |
+          app="dist/$APP_NAME-darwin-universal/$APP_NAME.app"
+          ytdlp="$app/Contents/Resources/bin/yt-dlp_macos"
+          chmod +x "$ytdlp"
+          ls -la "$app/Contents/Resources" "$app/Contents/Resources/bin"
+          lipo -archs "$app/Contents/MacOS/$APP_NAME"
+          "$ytdlp" --version
+      - name: Smoke test (launch for 20 s)
+        run: |
+          app="dist/$APP_NAME-darwin-universal/$APP_NAME.app"
+          "$app/Contents/MacOS/$APP_NAME" --enable-logging > launch.log 2>&1 &
+          pid=$!
+          sleep 20
+          if ! kill -0 $pid 2>/dev/null; then
+            echo "App exited early"; cat launch.log; exit 1
+          fi
+          osascript -e "tell application \"System Events\" to get name of every window of (every process whose unix id is $pid)" || true
+          screencapture -x launch.png || true
+          kill $pid; wait $pid || true
+          cat launch.log
+          if grep -Ei "uncaught|fatal|crash" launch.log; then echo "Errors in launch log"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-smoke-test
+          path: |
+            launch.log
+            launch.png
+          if-no-files-found: ignore
+      - name: Zip
+        run: |
+          version="${TAG#v}"
+          ditto -c -k --sequesterRsrc --keepParent "dist/$APP_NAME-darwin-universal/$APP_NAME.app" "OpenDJ-$version-mac-universal.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-universal
+          path: OpenDJ-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '{win-*,mac-universal}'
+          path: assets
+          merge-multiple: true
+      - name: Write release notes
+        run: |
+          version="${TAG#v}"
+          {
+            awk -v h="## What's new in $version" '$0 == h {on=1; next} on && /^## / {exit} on' README.md
+            cat <<EOF
+
+          ## Downloads
+
+          - **Windows x64** (most Windows PCs): \`OpenDJ-$version-win-x64.zip\`
+          - **Windows ARM64** (Snapdragon / Windows on ARM): \`OpenDJ-$version-win-arm64.zip\`
+          - **macOS** (Apple Silicon and Intel, universal): \`OpenDJ-$version-mac-universal.zip\`
+
+          AI stem models, onnxruntime and PyTorch are not included; they are optional and set up on your machine.
+          DSP stems, decks, DROP, SFX and search work without them.
+
+          ## Installing
+
+          **Windows:** unzip the folder somewhere you keep apps and double-click **Commons DJ NoGate.exe**.
+          The app isn't code-signed, so SmartScreen warns you the first time: click **More info → Run anyway**.
+
+          **macOS:** unzip and drag **Commons DJ NoGate.app** to Applications. The app isn't signed or notarized
+          (no Apple Developer account), so the first time **right-click the app → Open → Open**. If macOS says the app
+          is damaged or still won't open it, run this in Terminal:
+
+          \`\`\`
+          xattr -dr com.apple.quarantine "/Applications/Commons DJ NoGate.app"
+          \`\`\`
+          EOF
+          } > notes.md
+          cat notes.md
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -la assets
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --prerelease --notes-file notes.md
+          else
+            gh release create "$TAG" --verify-tag --prerelease --title "OpenDJ ${TAG#v}" --notes-file notes.md
+          fi
+          gh release upload "$TAG" assets/*.zip --clobber
