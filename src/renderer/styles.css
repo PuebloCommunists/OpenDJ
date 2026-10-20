@@ -27,7 +27,7 @@ body {
   color: var(--text);
   font: 13px/1.35 var(--sans);
   display: grid;
-  grid-template-rows: 48px auto auto minmax(170px, 1fr);
+  grid-template-rows: 48px auto auto 8px minmax(170px, 1fr);
   overflow: hidden;
   user-select: none;
 }
@@ -423,7 +423,7 @@ kbd {
 
 /* ------------------------------------------------------------------ compact */
 @media (max-height: 780px) {
-  .wave-row { height: 54px; }
+  .wave-row { height: var(--wave-h, 54px); }
   .knob svg { width: 30px; height: 30px; }
   .fader-wrap { height: 200px; }
   .tempo .tempo-slider { min-height: 90px; }
@@ -531,3 +531,103 @@ body[data-theme='skrillex'] .topbar {
 }
 body[data-theme='skrillex'] .t-title { text-shadow: 1px 0 var(--a), -1px 0 var(--cc); font-weight: 800; }
 body[data-theme='skrillex'] .wave-row, body[data-theme='skrillex'] .overview { background: rgba(0, 0, 0, 0.6); }
+
+/* ------------------------------------------------------------------ polish
+   8 px spacing grid, aligned control rows, state you can read at a glance,
+   short transitions. Overrides the rules above; keeps every theme sharp. */
+:root { --gap: 8px; --row-label: 64px; --ease: 120ms ease-out; }
+.elapsed, .remain, .bpm-eff, .bpm-sub, .lib .num, .key-read, .stemrow .label, #creditsCount, .count { font-variant-numeric: tabular-nums; }
+
+/* transitions */
+button, select, .field, .chip, .tab, .knob .k-value, .deck, .deck-badge, .split i {
+  transition: background-color var(--ease), color var(--ease), border-color var(--ease), box-shadow var(--ease), opacity var(--ease), transform 80ms ease-out;
+}
+.wave-row { transition: height 150ms ease-out, opacity 150ms ease-out; }
+body.splitting .wave-row { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+/* focus: visible in every theme, never on mouse clicks */
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent, var(--cc)); outline-offset: 1px; }
+.field:focus-visible { outline-offset: -2px; }
+
+/* waveforms + split handle */
+.waves { padding: var(--gap) 16px 0; }
+@media (min-height: 781px) { .wave-row { height: var(--wave-h, 70px); } }
+body.waves-hidden .waves { padding-top: 0; gap: 0; }
+body.waves-hidden .wave-row { opacity: 0; }
+body.waves-hidden .zoom { display: none; }
+.zoom { right: 24px; }
+.zoom button:hover { color: var(--text); border-color: var(--line-2); }
+.split { display: grid; place-items: center; cursor: row-resize; touch-action: none; margin: 0 16px; }
+.split i { width: 48px; height: 3px; background: var(--line-2); }
+.split:hover i, .split:focus-visible i, body.splitting .split i { background: var(--muted); width: 72px; }
+.console { padding: var(--gap) 16px; border-bottom: 0; gap: var(--gap); }
+
+/* deck: title / time / BPM / key readable at a glance */
+.deck { padding: 12px 16px; gap: var(--gap); position: relative; }
+.deck::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); opacity: 0; transition: opacity var(--ease); }
+.deck.playing::before { opacity: 1; }
+.deck-head { gap: var(--gap); }
+.deck-badge { width: 28px; height: 28px; }
+.deck.playing .deck-badge { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+.t-title { font-size: 15px; line-height: 1.25; }
+.deck-body { gap: 16px; }
+.deck-main { gap: var(--gap); }
+.readouts { align-items: baseline; }
+.elapsed, .bpm-eff { font-size: 26px; }
+.bpm-sub { margin-top: 2px; }
+.overview { height: 44px; }
+
+.row { gap: 6px; min-height: 28px; }
+.transport { gap: var(--gap); }
+.pad.play { width: 72px; }
+.hotcues { gap: 6px; }
+.hc:not(.set):hover { color: var(--text); }
+.hc { position: relative; }
+.mini, .loops .lp, .stem { height: 28px; }
+
+/* Loop / Key / Stems rows: one fixed label column so the controls line up */
+.loops > .label:first-child, .keyrow > .label, .stemrow > .label {
+  width: var(--row-label); min-width: var(--row-label); margin: 0; flex: none;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.loops .lp { width: 32px; }
+.loops .spacer + .label { margin: 0 2px 0 0; }
+.keyrow .key-read { flex: none; width: 132px; max-width: none; overflow: hidden; text-overflow: ellipsis; }
+.stemrow .stem { flex: 1; max-width: none; }
+
+/* state */
+.pad.play.on { box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.18); }
+.pad.sync.on, .mini.on, .key-lock.on { font-weight: 700; }
+.key-lock.on::before { content: '● '; font-size: 9px; vertical-align: 1px; }
+.stem.off { text-decoration: line-through; opacity: 0.85; }
+.deck.stems-muted .stemrow > .label { color: var(--warn); }
+body[data-theme='light'] .deck.stems-muted .stemrow > .label, body:not([data-theme]) .deck.stems-muted .stemrow > .label { color: #b26b00; }
+.stemrow .label.ai { color: var(--accent); }
+
+/* mixer: calmer, fewer lines */
+.mixer { padding: 12px; gap: 12px; justify-content: space-between; }
+.knobs { gap: 4px; }
+.knob .k-track { stroke: var(--panel-2); }
+.knob .k-cap { stroke: transparent; }
+.knob:hover .k-cap { stroke: var(--line-2); }
+.xfader { padding-top: var(--gap); border-top: 1px solid var(--line); }
+
+/* browser */
+.browser { padding: 0 16px 12px; }
+.tabs { gap: 2px; height: 40px; }
+.tab:hover { color: var(--text); }
+.tab-tools { gap: var(--gap); }
+.btn.ghost:hover { background: var(--panel-2); }
+.lib td { padding: 7px 10px; }
+.lib tbody tr:hover td { background: var(--panel-2); }
+.chip, .btn, #themeSel { min-height: 28px; }
+
+body[data-theme='skrillex'] { --row-label: 72px; }
+body[data-theme='skrillex'] .label { font-size: 10px; }
+@media (max-height: 780px) {
+  .elapsed, .bpm-eff { font-size: 22px; }
+}
