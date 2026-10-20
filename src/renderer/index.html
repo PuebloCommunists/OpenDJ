@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self'" />
+  <title>Commons DJ (no license gate)</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+      <span class="brand-name">COMMONS<b>DJ</b></span>
+    </div>
+    <div class="top-center">
+      <div class="master">
+        <span class="label">Volume</span>
+        <input id="masterVol" class="hslider" type="range" min="0" max="1" step="0.01" value="0.85" aria-label="Master volume" />
+        <div class="meter meter-h" id="masterMeter"><div class="meter-fill"></div><div class="meter-peak"></div></div>
+      </div>
+      <div class="curve">
+        <span class="label">Crossfade</span>
+        <div class="seg" id="curveSeg" role="radiogroup" aria-label="Crossfader curve">
+          <button data-curve="smooth" class="on" role="radio" aria-checked="true">Blend</button>
+          <button data-curve="cut" role="radio" aria-checked="false">Cut</button>
+        </div>
+      </div>
+    </div>
+    <div class="top-right">
+      <select id="themeSel" aria-label="Theme" title="Theme"><option value="light">Light</option><option value="dark">Dark</option><option value="skrillex">Skrillex-style</option></select>
+      <button class="chip" id="bgBtn" title="Put your own picture behind the app (right-click to remove)">Background…</button><input id="bgFile" type="file" accept="image/*" hidden />
+      <button class="chip" id="ytdlpChip" title="yt-dlp status">yt-dlp …</button>
+      <button class="chip" id="creditsBtn" title="Credits for Creative Commons tracks you've played">Credits <span id="creditsCount">0</span></button>
+      <button class="chip icon" id="helpBtn" title="Keyboard shortcuts (?)">?</button>
+    </div>
+  </header>
+
+  <section class="waves">
+    <div class="wave-row" data-deck="A">
+      <span class="wave-tag">A</span>
+      <canvas id="waveA" class="scroll-wave"></canvas>
+    </div>
+    <div class="wave-row" data-deck="B">
+      <span class="wave-tag">B</span>
+      <canvas id="waveB" class="scroll-wave"></canvas>
+    </div>
+    <div class="zoom">
+      <button id="zoomOut" title="Zoom out">−</button>
+      <button id="zoomIn" title="Zoom in">+</button>
+    </div>
+  </section>
+
+  <main class="console">
+    <section class="deck" id="deckA" data-deck="A"></section>
+
+    <section class="mixer">
+      <div class="strips">
+        <div class="strip" data-deck="A">
+          <div class="knobs">
+            <div class="knob" data-param="trim" data-label="Gain"></div>
+            <div class="knob" data-param="high" data-label="High"></div>
+            <div class="knob" data-param="mid" data-label="Mid"></div>
+            <div class="knob" data-param="low" data-label="Low"></div>
+            <div class="knob" data-param="filter" data-label="Filter"></div>
+          </div>
+          <div class="fader-wrap">
+            <div class="meter meter-v"><div class="meter-fill"></div><div class="meter-peak"></div></div>
+            <input class="vslider channel-fader" type="range" min="0" max="1" step="0.005" value="1" aria-label="Deck A volume" />
+          </div>
+        </div>
+        <div class="strip" data-deck="B">
+          <div class="knobs">
+            <div class="knob" data-param="trim" data-label="Gain"></div>
+            <div class="knob" data-param="high" data-label="High"></div>
+            <div class="knob" data-param="mid" data-label="Mid"></div>
+            <div class="knob" data-param="low" data-label="Low"></div>
+            <div class="knob" data-param="filter" data-label="Filter"></div>
+          </div>
+          <div class="fader-wrap">
+            <input class="vslider channel-fader" type="range" min="0" max="1" step="0.005" value="1" aria-label="Deck B volume" />
+            <div class="meter meter-v"><div class="meter-fill"></div><div class="meter-peak"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="xfader">
+        <span>A</span>
+        <input id="crossfader" class="hslider xf" type="range" min="0" max="1" step="0.005" value="0.5" aria-label="Crossfader" />
+        <span>B</span>
+      </div>
+    </section>
+
+    <section class="deck" id="deckB" data-deck="B"></section>
+  </main>
+
+  <section class="browser">
+    <nav class="tabs" role="tablist">
+      <button class="tab on" data-tab="library" role="tab" aria-selected="true">Library <span id="libCount" class="count">0</span></button>
+      <button class="tab" data-tab="cc" role="tab" aria-selected="false">YouTube search</button>
+      <div class="tab-tools" data-for="library">
+        <input id="libFilter" class="field" type="search" placeholder="Filter library  ( / )" />
+        <button class="btn" id="addFiles">Add files</button>
+        <button class="btn ghost" id="openFolder">Open download folder</button>
+      </div>
+      <button class="btn ghost" id="browseMax" title="Give the library / search the full window (Esc to go back)">Expand ⤢</button>
+    </nav>
+
+    <div class="panel on" data-panel="library">
+      <div class="table-wrap">
+        <table class="lib">
+          <thead>
+            <tr><th class="c-load">Load</th><th>Title</th><th>Artist</th><th class="num">BPM</th><th class="c-key">Key</th><th class="num">Time</th><th>Source</th><th class="c-act"></th></tr>
+          </thead>
+          <tbody id="libBody"></tbody>
+        </table>
+        <div class="empty" id="libEmpty">
+          <p class="empty-title">Your crate is empty</p>
+          <p>Drop audio files anywhere in this window, click <b>Add files</b>, or grab Creative Commons tracks from the search tab.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="cc">
+      <div class="cc-bar">
+        <form id="ccSearchForm" class="cc-form">
+          <input id="ccQuery" class="field grow" type="search" placeholder="Search YouTube — try “lofi beat”, “house loop”, “funk breakbeat”" />
+          <button class="btn primary" type="submit">Search</button>
+        </form>
+        <form id="ccLinkForm" class="cc-form">
+          <input id="ccLink" class="field grow" type="url" placeholder="…or paste a video link" />
+          <button class="btn" type="submit">Get</button>
+        </form>
+      </div>
+      <p class="cc-note" title="Search shows the same results as youtube.com. Downloads are not license-checked, so tracks without a CC license show as UNCHECKED.">
+        <b>Dev build:</b> plain YouTube search (no Creative Commons filter) and no license check — non-CC tracks show as UNCHECKED.
+      </p>
+      <div id="ccStatus" class="cc-status" hidden></div>
+      <div id="ccInfo" class="cc-info" hidden></div>
+      <div id="ccResults" class="cc-results"></div>
+    </div>
+  </section>
+
+  <div id="dropOverlay" class="drop-overlay" hidden><div>Drop audio files to add them</div></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <dialog id="helpDialog" class="dlg">
+    <h2>Keyboard</h2>
+    <div class="keys">
+      <div>
+        <h3 class="a">Deck A</h3>
+        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync to B</p>
+        <p><kbd>1</kbd>–<kbd>4</kbd> hot cues</p><p><kbd>Q</kbd> / <kbd>W</kbd> nudge (hold)</p>
+      </div>
+      <div>
+        <h3 class="b">Deck B</h3>
+        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync to A</p>
+        <p><kbd>7</kbd>–<kbd>0</kbd> hot cues</p><p><kbd>O</kbd> / <kbd>P</kbd> nudge (hold)</p>
+      </div>
+      <div>
+        <h3>Mixer</h3>
+        <p><kbd>←</kbd> <kbd>→</kbd> crossfader</p><p><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> slam to side</p>
+        <p><kbd>/</kbd> filter library</p><p><kbd>?</kbd> this help</p>
+      </div>
+    </div>
+    <p class="muted small">Hot cues: click an empty pad to set it, click again to jump, right-click to clear.
+      Knobs: drag up/down, scroll, double-click to reset. Tempo slider: double-click to reset.</p>
+    <form method="dialog"><button class="btn">Close</button></form>
+  </dialog>
+
+  <dialog id="creditsDialog" class="dlg">
+    <h2>Credits</h2>
+    <p class="muted small">Creative Commons tracks you've played this session. If you post or stream your mix, paste these into the description.</p>
+    <textarea id="creditsText" readonly></textarea>
+    <form method="dialog" class="dlg-actions">
+      <button class="btn primary" id="copyCredits" type="button">Copy</button>
+      <button class="btn">Close</button>
+    </form>
+  </dialog>
+
+  <template id="deckTemplate">
+    <div class="deck-head">
+      <span class="deck-badge"></span>
+      <div class="deck-title">
+        <div class="t-title">No track loaded</div>
+        <div class="t-artist">Drag a track here, or use the A / B buttons in the library</div>
+      </div>
+      <span class="lic" hidden></span>
+    </div>
+    <div class="deck-body">
+      <div class="tempo">
+        <span class="tempo-plus">+</span>
+        <input class="vslider tempo-slider" type="range" min="-1000" max="1000" step="1" value="0" aria-label="Tempo" />
+        <span class="tempo-minus">−</span>
+        <select class="tempo-range" aria-label="Tempo range">
+          <option value="8">±8%</option>
+          <option value="16" selected>±16%</option>
+          <option value="50">±50%</option>
+        </select>
+      </div>
+      <div class="deck-main">
+        <div class="readouts">
+          <div class="time">
+            <span class="elapsed">0:00.0</span>
+            <span class="remain">−0:00.0</span>
+          </div>
+          <div class="bpm">
+            <span class="bpm-eff">—.—</span><span class="bpm-unit">BPM</span>
+            <div class="bpm-sub"><span class="rate">0.00%</span> · <span class="bpm-track">no grid</span></div>
+          </div>
+        </div>
+        <canvas class="overview"></canvas>
+        <div class="row transport">
+          <button class="pad cue" title="Cue: set or jump back to the cue point">Cue</button>
+          <button class="pad play" title="Play / pause">▶</button>
+          <button class="pad sync" title="Match tempo and beat to the other deck">Sync</button>
+          <div class="nudge">
+            <button class="mini nudge-back" title="Nudge back (hold)">◀◀</button>
+            <button class="mini nudge-fwd" title="Nudge forward (hold)">▶▶</button>
+          </div>
+        </div>
+        <div class="row hotcues" title="Hot cues: click an empty pad to save a spot, click it again to jump there, right-click to clear">
+          <button class="hc" data-i="0">1</button>
+          <button class="hc" data-i="1">2</button>
+          <button class="hc" data-i="2">3</button>
+          <button class="hc" data-i="3">4</button>
+        </div>
+        <div class="row loops">
+          <span class="label" title="Loop length in beats">Loop</span>
+          <button class="lp" data-beats="1">1</button>
+          <button class="lp" data-beats="2">2</button>
+          <button class="lp" data-beats="4">4</button>
+          <button class="lp" data-beats="8">8</button>
+          <span class="spacer"></span>
+          <span class="label" title="Fix the detected tempo / beat grid">BPM</span>
+          <button class="mini half" title="Halve BPM">÷2</button>
+          <button class="mini double" title="Double BPM">×2</button>
+          <button class="mini tap" title="Tap along to set BPM">Tap</button>
+          <button class="mini beat-here" title="Put a beat at the playhead">Beat</button>
+        </div>
+        <div class="row keyrow">
+          <span class="label">Key</span>
+          <button class="mini key-read" title="Track key → key you hear. Click to reset the key shift.">—</button>
+          <button class="mini key-down" title="Key down a semitone (tempo unchanged)">−</button>
+          <button class="mini key-up" title="Key up a semitone (tempo unchanged)">+</button>
+          <button class="mini key-lock" title="Key lock: the tempo slider changes speed only, not pitch">Lock</button>
+          <button class="mini key-match" title="Shift this deck into the other deck's key (or its relative major/minor)">Match</button>
+        </div>
+        <div class="row stemrow" title="Stems — real-time split of this deck into vocals, drums and instruments">
+          <span class="label">Stems</span>
+          <button class="stem" data-stem="vocals" title="Vocals on/off (Shift-click: solo, right-click: all on)">Vocals</button>
+          <button class="stem" data-stem="drums" title="Drums on/off (Shift-click: solo, right-click: all on)">Drums</button>
+          <button class="stem" data-stem="instruments" title="Instruments on/off (Shift-click: solo, right-click: all on)">Instruments</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
