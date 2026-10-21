@@ -16,6 +16,8 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 - **Mist theme:** a softer bright theme (soft grey, off-white panels, slate text) in **⚙ Settings**.
 - **Fullscreen** (button and F11) now fullscreens the app window, so the Settings dialog stays on top instead of getting stuck behind the page.
 - **Tidier Settings:** theme cards fit on one row, with more space between sections.
+- **Clean key lock:** key lock and key shift use Signalsmith Stretch, so changing the tempo with key lock on no longer warbles. Its delay is compensated, so sync, loops and Drop stay on the beat.
+- **Sync locks tempos:** press **Sync** and the decks stay tempo-locked. Change either one's tempo and the other follows. Press **Sync** again (or load a new track) to unlock.
 
 ## What's new in 0.3.2-beta
 
