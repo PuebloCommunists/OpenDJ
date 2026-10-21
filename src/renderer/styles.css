@@ -75,6 +75,8 @@ button { cursor: pointer; transition: background-color 0.12s, color 0.12s, box-s
   background: var(--cc); margin-right: 7px; vertical-align: 1px;
 }
 .chip.warn::before { background: var(--warn); }
+.snap-seg { align-items: center; }
+.seg-label { font-size: 11px; color: var(--muted); padding: 0 6px 0 8px; }
 #creditsCount { color: var(--cc); margin-left: 4px; }
 .seg { display: inline-flex; padding: 2px; gap: 2px; }
 .seg button { background: transparent; border: 0; border-radius: 6px; padding: 4px 12px; font-size: 12px; color: var(--muted); }
@@ -228,12 +230,6 @@ input[type='range']::-webkit-slider-runnable-track { background: var(--panel-3);
 .pad.play { width: 64px; font-size: 16px; }
 .pad.play.on, .pad.play.on:hover { background: var(--accent); color: var(--on-accent); }
 .pad.cue.on, .pad.sync.on { background: var(--accent-soft); color: var(--accent); }
-/* DROP: lit while the macro runs, pulsing on every beat; dimmer while a cancel waits for its beat. */
-.pad.drop.on, .pad.drop.on:hover {
-  background: var(--accent); color: var(--on-accent);
-  box-shadow: 0 0 calc(var(--pulse, 0) * 18px) var(--accent), 0 0 0 calc(var(--pulse, 0) * 3px) var(--accent-soft);
-}
-.pad.drop.cancelling { opacity: 0.6; }
 .nudge { margin-left: auto; display: flex; gap: 4px; }
 .mini { height: 26px; padding: 0 9px; font: 500 12px/1 var(--sans); white-space: nowrap; }
 .mini.on, .mini.on:hover, .mini.tapping { background: var(--accent-soft); color: var(--accent); }
@@ -589,7 +585,7 @@ body.browse-max .browser { position: fixed; top: 52px; left: 0; right: 0; bottom
 
 /* ------------------------------------------------------------------ 4 decks
    C (left, with A) and D (right, with B). Hidden in 2-deck mode. In 4-deck mode the
-   decks stack two per side and go compact: no record or hot cues. */
+   decks stack two per side and go compact: no record. */
 :root { --c: #b57bff; --c-soft: rgba(181, 123, 255, 0.16); --d: #a3e635; --d-soft: rgba(163, 230, 53, 0.15); }
 body[data-theme='aloe'] { --c: #7b4fd6; --c-soft: rgba(123, 79, 214, 0.14); --d: #4d8f10; --d-soft: rgba(77, 143, 16, 0.14); }
 body[data-theme='cherry'] { --c: #c9a0ff; --c-soft: rgba(201, 160, 255, 0.16); --d: #ffd166; --d-soft: rgba(255, 209, 102, 0.15); }
@@ -616,9 +612,11 @@ body.decks-4 .console { grid-template-columns: 1fr 340px 1fr; grid-template-area
 body.decks-4 .waves { gap: 3px; }
 body.decks-4 .wave-row { height: 24px; }
 body.decks-4 .deck { padding: 8px 10px; gap: 5px; }
-body.decks-4 .platter, body.decks-4 .hotcues, body.decks-4 .readouts::after { display: none; }
+body.decks-4 .platter, body.decks-4 .readouts::after { display: none; }
+body.decks-4 .hc { height: 22px; }
+body.decks-4 .t-artist { display: none; }
 body.decks-4 .overview { height: 22px; }
-body.decks-4 .pad { height: 30px; }
+body.decks-4 .pad { height: 28px; }
 body.decks-4 .elapsed, body.decks-4 .bpm-eff { font-size: 19px; }
 body.decks-4 .tempo .tempo-slider { min-height: 70px; }
 body.decks-4 .strips { grid-template-columns: repeat(4, 1fr); gap: 4px; }
@@ -643,6 +641,28 @@ body.decks-4 .extra { animation: fade-in 0.25s ease-out; }
 .table-wrap, .cc-results, .sfx-grid { scroll-behavior: smooth; }
 .lib tr { cursor: grab; }
 .lib tr:active { cursor: grabbing; }
+
+/* 4-deck XY pad: replaces the crossfader. Corners match the deck layout. */
+body.decks-4 .xfader { display: none; }
+.xypad {
+  position: relative; align-self: center; width: 100%; max-width: 220px; aspect-ratio: 4 / 3; border-radius: 10px; cursor: crosshair; touch-action: none;
+  background:
+    linear-gradient(var(--line-2), var(--line-2)) center / 1px 100% no-repeat,
+    linear-gradient(var(--line-2), var(--line-2)) center / 100% 1px no-repeat,
+    var(--panel-2);
+}
+.xypad.grabbing { cursor: grabbing; }
+.xy-tag { position: absolute; font: 700 10px/1 var(--sans); padding: 3px 5px; border-radius: 4px; color: var(--on-accent); pointer-events: none; }
+.xy-tag[data-deck='A'] { left: 6px; top: 6px; background: var(--a); }
+.xy-tag[data-deck='B'] { right: 6px; top: 6px; background: var(--b); }
+.xy-tag[data-deck='C'] { left: 6px; bottom: 6px; background: var(--c); }
+.xy-tag[data-deck='D'] { right: 6px; bottom: 6px; background: var(--d); }
+.xy-puck {
+  position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; pointer-events: none;
+  background: var(--cherry) 55% 45% / 78% no-repeat, #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  transition: transform 0.1s;
+}
+.xypad.grabbing .xy-puck { transform: scale(1.12); }
 
 /* ------------------------------------------------------------------ SFX pads */
 .sfx-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }

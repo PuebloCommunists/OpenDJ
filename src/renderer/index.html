@@ -25,6 +25,13 @@
           <button data-curve="smooth" class="on" role="radio" aria-checked="true">Blend</button>
           <button data-curve="cut" role="radio" aria-checked="false">Cut</button>
         </div>
+        <div class="seg snap-seg" id="snapSeg" role="radiogroup" aria-label="Snap to beat" title="Snap: a dragged waveform, record or overview (and pressing play) lands on the nearest step, lined up with the other playing deck">
+          <span class="seg-label">Snap</span>
+          <button data-snap="0" role="radio" aria-checked="false">Off</button>
+          <button data-snap="1" class="on" role="radio" aria-checked="true">1</button>
+          <button data-snap="2" role="radio" aria-checked="false">½</button>
+          <button data-snap="4" role="radio" aria-checked="false">¼</button>
+        </div>
       </div>
     </div>
     <div class="top-right">
@@ -117,6 +124,11 @@
           </div>
         </div>
       </div>
+      <div class="xypad extra" id="xyPad" role="slider" aria-label="4-deck mix: drag toward a corner" tabindex="0">
+        <span class="xy-tag" data-deck="A">A</span><span class="xy-tag" data-deck="B">B</span>
+        <span class="xy-tag" data-deck="C">C</span><span class="xy-tag" data-deck="D">D</span>
+        <span class="xy-puck"></span>
+      </div>
       <div class="xfader">
         <span class="xf-l">A</span>
         <input id="crossfader" class="hslider xf" type="range" min="0" max="1" step="0.005" value="0.5" aria-label="Crossfader" />
@@ -204,12 +216,12 @@
     <div class="keys">
       <div>
         <h3 class="a">Deck A</h3>
-        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync / unlock</p><p><kbd>V</kbd> drop</p>
+        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync / unlock</p>
         <p><kbd>1</kbd>–<kbd>4</kbd> hot cues</p><p><kbd>Q</kbd> / <kbd>W</kbd> nudge (hold)</p>
       </div>
       <div>
         <h3 class="b">Deck B</h3>
-        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync / unlock</p><p><kbd>N</kbd> drop</p>
+        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync / unlock</p>
         <p><kbd>7</kbd>–<kbd>0</kbd> hot cues</p><p><kbd>O</kbd> / <kbd>P</kbd> nudge (hold)</p>
       </div>
       <div>
@@ -254,12 +266,21 @@
       </div>
     </section>
     <section class="set-section">
+      <h3>Waveform</h3>
+      <div class="set-grid">
+        <span>Beats shown</span>
+        <div class="seg" id="beatsSeg" role="radiogroup" aria-label="Beats shown across the waveform">
+          <button data-beats="4" role="radio">4</button><button data-beats="8" role="radio">8</button><button data-beats="16" class="on" role="radio">16</button><button data-beats="32" role="radio">32</button><button data-beats="64" role="radio">64</button>
+        </div>
+      </div>
+    </section>
+    <section class="set-section">
       <h3>Decks</h3>
       <div class="seg" id="deckCountSeg" role="radiogroup" aria-label="Number of decks">
         <button data-decks="2" class="on" role="radio" aria-checked="true">2 decks</button>
         <button data-decks="4" role="radio" aria-checked="false">4 decks</button>
       </div>
-      <p class="muted small">4 decks adds C and D: C plays through the crossfader's left side with A, D through the right with B. Decks go compact to fit.</p>
+      <p class="muted small">4 decks adds C and D, and the crossfader becomes an XY pad: drag toward a corner to bring that deck in. Decks go compact to fit.</p>
     </section>
     <form method="dialog" class="dlg-actions"><button class="btn">Done</button></form>
   </dialog>
@@ -314,7 +335,6 @@
           <button class="pad cue" title="Cue: set or jump back to the cue point">Cue</button>
           <button class="pad play" title="Play / pause">▶</button>
           <button class="pad sync" title="Sync: match tempo and beat to the other deck and keep the tempos locked together. Press again to unlock.">Sync</button>
-          <button class="pad drop" title="Build-up and drop: loop roll, filter sweep and riser, then everything lets go on the next bar (V / N). Press again to cancel.">Drop</button>
           <div class="nudge">
             <button class="mini nudge-back" title="Nudge back (hold)">◀◀</button>
             <button class="mini nudge-fwd" title="Nudge forward (hold)">▶▶</button>

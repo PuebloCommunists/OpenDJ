@@ -37,7 +37,8 @@ const state = {
   filter: '',
   waves: { A: null, B: null, C: null, D: null },
   overviewImg: { A: null, B: null, C: null, D: null },
-  zoom: 110, // waveform pixels per second
+  zoom: 110, // waveform pixels per second (tracks without a BPM)
+  beats: 16, // beats shown across the scrolling waveforms (tracks with a BPM)
   played: new Map(), // trackId -> track (web tracks played this session, for credits)
   ccResults: [],
   jobs: new Map(), // jobId -> { el, url }
@@ -214,7 +215,6 @@ function buildDeck(name) {
     play: $('.play', root),
     cue: $('.cue', root),
     sync: $('.sync', root),
-    drop: $('.drop', root),
     tempo: $('.tempo-slider', root),
     range: $('.tempo-range', root),
     hotcues: $$('.hc', root),
@@ -239,7 +239,6 @@ function buildDeck(name) {
   });
   d.cue.addEventListener('click', () => deck.cue());
   d.sync.addEventListener('click', () => doSync(name));
-  d.drop.addEventListener('click', () => toggleDrop(name));
 
   const applyTempo = () => {
     const pct = (Number(d.tempo.value) / 1000) * Number(d.range.value);
@@ -317,11 +316,20 @@ function buildDeck(name) {
     d.overview.setPointerCapture(e.pointerId);
     const move = (ev) => seekTo(ev);
     d.overview.addEventListener('pointermove', move);
-    d.overview.addEventListener('pointerup', () => d.overview.removeEventListener('pointermove', move), { once: true });
+    d.overview.addEventListener('pointerup', () => {
+      d.overview.removeEventListener('pointermove', move);
+      snapDeck(name);
+    }, { once: true });
   });
 
+  let wasPlaying = false;
   deck.on((type) => {
     if (type === 'state' || type === 'load') renderDeckState(name);
+    // Starting play with Snap on lands on the other deck's beat, whichever control started it.
+    if (type === 'state') {
+      if (deck.playing && !wasPlaying) snapDeck(name);
+      wasPlaying = deck.playing;
+    }
     if (type === 'load') {
       root.classList.remove('just-loaded');
       void root.offsetWidth; // restart the animation
@@ -335,10 +343,6 @@ function buildDeck(name) {
       renderSyncLights();
     }
     if (type === 'sync') syncTempoSlider(name);
-    if (type === 'drop') {
-      d.drop.classList.toggle('on', !!deck.drop);
-      d.drop.classList.toggle('cancelling', !!deck.drop?.cancelling);
-    }
     if (type === 'key' || type === 'rate' || type === 'load' || type === 'sync' || type === 'fx') renderKey(name);
     if (type === 'stems' || type === 'load' || type === 'fx') renderStems(name);
   });
@@ -441,11 +445,17 @@ function setupSfx() {
   $('#sfxLevel').addEventListener('input', (e) => mixer.sfx.gain.setTargetAtTime(Number(e.target.value), mixer.ctx.currentTime, 0.01));
 }
 
-function toggleDrop(name) {
+// Snap to beat (top-bar toggle): when you let go of a dragged waveform, record or
+// overview, the deck lands on the nearest beat lined up with the deck it plays against.
+const snapDiv = () => Number($('#snapSeg .on')?.dataset.snap || 0); // 0 off, else steps per beat
+const snapOn = () => snapDiv() > 0;
+function snapDeck(name) {
   const deck = mixer.decks[name];
-  if (deck.drop) return deck.cancelDrop();
-  if (!deck.playing) return toast(`Play deck ${name} first — the drop builds on the playing track.`);
-  if (!deck.startDrop()) toast(`Deck ${name} needs a beat grid for Drop (try TAP).`);
+  if (!snapOn() || !deck.buffer) return;
+  const shift = deck.beatSnap(deck.position, mixer.decks[partnerDeck(name)], snapDiv());
+  if (Math.abs(shift) < 0.002) return;
+  if (deck.playing) deck.fadeSwap(() => deck.seek(deck.position + shift));
+  else deck.seek(deck.pausedPos + shift);
 }
 
 // Sync lock: decks synced together stay tempo-locked. Move any one's tempo and the
@@ -619,6 +629,7 @@ function renderHotcues(name) {
   ui[name].hotcues.forEach((btn, i) => {
     const set = t?.cues?.[i] != null;
     btn.classList.toggle('set', set);
+    btn.textContent = set ? `${i + 1} · ${fmtTime(t.cues[i], true)}` : String(i + 1); // the marker's spot in the track
     btn.title = set ? `Hot cue ${i + 1} at ${fmtTime(t.cues[i], true)} (right-click to clear)` : `Set hot cue ${i + 1}`;
   });
 }
@@ -828,6 +839,59 @@ function buildMixer() {
     xf.value = 0.5;
     mixer.setCrossfader(0.5);
   });
+  const pickSnap = (v) => {
+    $$('#snapSeg button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.snap === v);
+      b.setAttribute('aria-checked', String(b.dataset.snap === v));
+    });
+    try {
+      localStorage.setItem('snap', v);
+    } catch {}
+  };
+  $$('#snapSeg button').forEach((b) => b.addEventListener('click', () => pickSnap(b.dataset.snap)));
+  try {
+    const saved = localStorage.getItem('snap');
+    pickSnap(saved === 'off' ? '0' : ['0', '1', '2', '4'].includes(saved) ? saved : '1');
+  } catch {}
+
+  // 4-deck XY pad: x = left (A, C) to right (B, D), y = top (A, B) to bottom (C, D).
+  const pad = $('#xyPad');
+  const puck = $('.xy-puck', pad);
+  let padY = 0.5;
+  const placePuck = () => {
+    puck.style.left = `${Number(xf.value) * 100}%`;
+    puck.style.top = `${padY * 100}%`;
+  };
+  const setPad = (x, y) => {
+    xf.value = x;
+    padY = Math.min(1, Math.max(0, y));
+    mixer.setCrossfader(Number(xf.value));
+    mixer.setCrossfaderY(document.body.classList.contains('decks-4') ? padY : null);
+    placePuck();
+  };
+  const fromPointer = (e) => {
+    const r = pad.getBoundingClientRect();
+    setPad(Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), (e.clientY - r.top) / r.height);
+  };
+  let padDrag = false;
+  pad.addEventListener('pointerdown', (e) => {
+    padDrag = true;
+    pad.setPointerCapture(e.pointerId);
+    pad.classList.add('grabbing');
+    fromPointer(e);
+  });
+  pad.addEventListener('pointermove', (e) => padDrag && fromPointer(e));
+  const endPad = () => {
+    padDrag = false;
+    pad.classList.remove('grabbing');
+  };
+  pad.addEventListener('pointerup', endPad);
+  pad.addEventListener('pointercancel', endPad);
+  pad.addEventListener('dblclick', () => setPad(0.5, 0.5));
+  xf.addEventListener('input', placePuck); // the arrow keys move x; keep the puck with it
+  state.applyXY = () => setPad(Number(xf.value), padY);
+  placePuck();
+
   const mv = $('#masterVol');
   mv.addEventListener('input', () => mixer.setMasterVolume(Number(mv.value)));
   mixer.setMasterVolume(Number(mv.value));
@@ -885,7 +949,7 @@ function drawScrolling(name) {
 
   if (wave && deck.buffer) {
     const pos = deck.position;
-    const pps = (state.zoom * dpr) / deck.rate; // device pixels per track-second (real time is constant)
+    const pps = dpr / secPerCssPx(deck, canvas.clientWidth); // device pixels per track-second
     const t0 = pos - cx / pps;
 
     // Loop region
@@ -1056,7 +1120,6 @@ function frame() {
       // Only the badge and BPM readout get the pulse: a style on the whole deck restyles it every frame.
       d.badge.style.setProperty('--pulse', pulse.toFixed(2));
       d.bpmEff.style.setProperty('--pulse', pulse.toFixed(2));
-      if (deck.drop) d.drop.style.setProperty('--pulse', pulse.toFixed(2));
       if (bars) {
         const beats = Math.floor((pos - bars.downbeat) / (60 / deck.bpm) + 1e-6);
         const n = bars.beatsPerBar;
@@ -1564,21 +1627,40 @@ function setupTabs() {
   });
 }
 
+/**
+ * Track-seconds per CSS pixel of a scrolling waveform. With a BPM, each deck shows
+ * the same number of its own beats, so synced decks line up beat for beat.
+ */
+function secPerCssPx(deck, cssWidth) {
+  return deck.bpm ? (state.beats * (60 / deck.bpm)) / Math.max(1, cssWidth) : deck.rate / state.zoom;
+}
+
 function setupZoom() {
-  // Zoom eases toward its target instead of jumping.
-  let target = state.zoom;
+  // Zoom eases toward its target (beats shown) instead of jumping.
+  let target = state.beats;
   const ease = () => {
-    state.zoom += (target - state.zoom) * 0.25;
-    if (Math.abs(target - state.zoom) > 0.5) requestAnimationFrame(ease);
-    else state.zoom = target;
+    state.beats += (target - state.beats) * 0.25;
+    state.zoom = 110 * (16 / state.beats); // tracks without a BPM zoom along
+    if (Math.abs(target - state.beats) > 0.02) requestAnimationFrame(ease);
+    else state.beats = target;
   };
-  const zoomBy = (f) => {
-    const settled = Math.abs(target - state.zoom) <= 0.5;
-    target = Math.max(25, Math.min(400, target * f));
+  const setBeats = (b) => {
+    const settled = Math.abs(target - state.beats) <= 0.02;
+    target = Math.max(2, Math.min(128, b));
+    $$('#beatsSeg button').forEach((x) => x.classList.toggle('on', Number(x.dataset.beats) === target));
+    try {
+      localStorage.setItem('beatsShown', String(target));
+    } catch {}
     if (settled) requestAnimationFrame(ease);
   };
-  $('#zoomIn').addEventListener('click', () => zoomBy(1.4));
-  $('#zoomOut').addEventListener('click', () => zoomBy(1 / 1.4));
+  const zoomBy = (f) => setBeats(Math.round(target / f));
+  $$('#beatsSeg button').forEach((b) => b.addEventListener('click', () => setBeats(Number(b.dataset.beats))));
+  try {
+    const saved = Number(localStorage.getItem('beatsShown'));
+    if (saved) setBeats(saved);
+  } catch {}
+  $('#zoomIn').addEventListener('click', () => zoomBy(2)); // half as many beats
+  $('#zoomOut').addEventListener('click', () => zoomBy(1 / 2));
 
   // Grab a waveform or a record to scratch: playback stops under your hand, the
   // track plays at the speed and direction you move it, and picks up where you
@@ -1587,7 +1669,7 @@ function setupZoom() {
   DECKS.forEach((name) => {
     const canvas = $(`#wave${name}`);
     const deck = mixer.decks[name];
-    const secPerPx = () => deck.rate / state.zoom; // track-seconds per CSS pixel
+    const secPerPx = () => secPerCssPx(deck, canvas.clientWidth);
 
     // Shared hand: `toPos(e)` maps a pointer event to a track position.
     const grabbable = (el, start, toPos) => {
@@ -1619,12 +1701,19 @@ function setupZoom() {
         let vel = wasPlaying || e.timeStamp - t > 80 ? 0 : v * 16; // track-seconds per frame
         const step = () => {
           vel *= 0.92;
-          if (Math.abs(vel) < 0.002 || deck.playing || !deck.scratching) return deck.scratchEnd(false);
+          if (Math.abs(vel) < 0.002 || deck.playing || !deck.scratching) {
+            deck.scratchEnd(false);
+            return snapDeck(name);
+          }
           deck.scratchTo(deck.position + vel);
           glide = requestAnimationFrame(step);
         };
         if (vel) glide = requestAnimationFrame(step);
-        else deck.scratchEnd(wasPlaying);
+        else {
+          // Snap while still held, so a playing deck comes back in on the beat with no extra jump.
+          if (snapOn()) deck.scratchTo(deck.pausedPos + deck.beatSnap(deck.pausedPos, mixer.decks[partnerDeck(name)], snapDiv()));
+          deck.scratchEnd(wasPlaying);
+        }
       };
       el.addEventListener('pointerup', release);
       el.addEventListener('pointercancel', release);
@@ -1655,7 +1744,7 @@ function setupZoom() {
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      if (e.ctrlKey) return zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15);
+      if (e.ctrlKey) return zoomBy(e.deltaY < 0 ? 1.25 : 1 / 1.25);
       if (!deck.buffer) return;
       const px = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
       deck.seek(deck.position + px * secPerPx());
@@ -1682,6 +1771,7 @@ function setupKeyboard() {
     const setXf = (v) => {
       xf.value = v;
       mixer.setCrossfader(v);
+      state.applyXY?.(); // keeps the 4-deck puck in step
     };
     const hotA = { '1': 0, '2': 1, '3': 2, '4': 3 };
     const hotB = { '7': 0, '8': 1, '9': 2, '0': 3 };
@@ -1708,8 +1798,6 @@ function setupKeyboard() {
     else if (k === ',') { B.toggle(); markPlayed('B'); }
     else if (k === 'm') B.cue();
     else if (k === '.') doSync('B');
-    else if (k === 'v') toggleDrop('A');
-    else if (k === 'n') toggleDrop('B');
     else if (e.code.startsWith('Digit') && e.code.slice(5) in hotA && !e.shiftKey) hotcue('A', hotA[e.code.slice(5)]);
     else if (e.code.startsWith('Digit') && e.code.slice(5) in hotA && e.shiftKey) clearHotcue('A', hotA[e.code.slice(5)]);
     else if (e.code.startsWith('Digit') && e.code.slice(5) in hotB) (e.shiftKey ? clearHotcue : hotcue)('B', hotB[e.code.slice(5)]);
@@ -1766,6 +1854,7 @@ function setDeckCount(n) {
     b.setAttribute('aria-checked', String(on));
   });
   if (!four) for (const name of ['C', 'D']) if (mixer.decks[name].playing) mixer.decks[name].pause();
+  state.applyXY?.(); // up/down only counts with four decks
   renderLibrary();
   try {
     localStorage.setItem('deckCount', four ? '4' : '2');

@@ -7,20 +7,6 @@ import SignalsmithStretch from './lib/SignalsmithStretch.mjs';
 
 const dbToGain = (db) => Math.pow(10, db / 20);
 
-// Two seconds of white noise, made once per context (the DROP riser loops it).
-const noiseBuffers = new WeakMap();
-function noiseBuffer(ctx) {
-  if (!noiseBuffers.has(ctx)) {
-    const b = ctx.createBuffer(2, ctx.sampleRate * 2, ctx.sampleRate);
-    for (let c = 0; c < 2; c++) {
-      const data = b.getChannelData(c);
-      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    }
-    noiseBuffers.set(ctx, b);
-  }
-  return noiseBuffers.get(ctx);
-}
-
 export const XF_SIDE = { A: 'L', C: 'L', B: 'R', D: 'R' }; // crossfader side per deck
 
 export const STEMS =['vocals', 'drums', 'instruments'];
@@ -54,6 +40,7 @@ export class Mixer {
       D: new Deck(this, 'D'),
     };
     this.crossfader = 0.5;
+    this.crossfaderY = null; // set in 4-deck mode (XY pad)
     this.curve = 'smooth';
     this.applyCrossfader();
 
@@ -93,21 +80,26 @@ export class Mixer {
     this.applyCrossfader();
   }
 
+  /** Vertical position of the 4-deck XY pad (0 = top: A and B, 1 = bottom: C and D); null = 2-deck crossfader. */
+  setCrossfaderY(y) {
+    this.crossfaderY = y == null ? null : Math.min(1, Math.max(0, y));
+    this.applyCrossfader();
+  }
+
   applyCrossfader() {
-    const x = this.crossfader;
-    let a;
-    let b;
-    if (this.curve === 'cut') {
-      // Scratch-style: both full until the very edges.
-      a = x > 0.95 ? (1 - x) / 0.05 : 1;
-      b = x < 0.05 ? x / 0.05 : 1;
-    } else {
-      // Equal-power blend.
-      a = Math.cos((x * Math.PI) / 2);
-      b = Math.sin((x * Math.PI) / 2);
-    }
+    // Per axis: [first side, second side] gains for position v (0..1).
+    const curve = (v) =>
+      this.curve === 'cut'
+        ? [v > 0.95 ? (1 - v) / 0.05 : 1, v < 0.05 ? v / 0.05 : 1] // scratch-style: both full until the very edges
+        : [Math.cos((v * Math.PI) / 2), Math.sin((v * Math.PI) / 2)]; // equal-power blend
+    const [l, r] = curve(this.crossfader);
+    const [top, bottom] = this.crossfaderY == null ? [1, 1] : curve(this.crossfaderY);
     const t = this.ctx.currentTime;
-    for (const d of Object.values(this.decks)) d.xfade.gain.setTargetAtTime(XF_SIDE[d.name] === 'L' ? a : b, t, 0.005);
+    for (const d of Object.values(this.decks)) {
+      const x = XF_SIDE[d.name] === 'L' ? l : r;
+      const y = d.name === 'A' || d.name === 'B' ? top : bottom; // A B on top, C D below
+      d.xfade.gain.setTargetAtTime(x * y, t, 0.005);
+    }
   }
 }
 
@@ -181,14 +173,6 @@ export class Deck {
       this.aiGains[n].connect(this.bus);
     }
     this.sources = []; // all running sources (1, or 4 with AI stems)
-
-    // DROP macro: a white-noise riser joins after the deck's filter (so the
-    // high-pass sweep doesn't eat it) and before the fader / crossfader.
-    this.riser = ctx.createGain();
-    this.riser.gain.value = 0;
-    this.riser.connect(this.fader);
-    this.drop = null; // { tStart, tDrop, startPos, ... } while the macro runs
-    this.filterX = 0; // the filter knob's position, so the macro can hand it back
   }
 
   /** Where the sources play into (then through the fx node when loaded, then the EQ). */
@@ -418,7 +402,6 @@ export class Deck {
   }
 
   load(buffer, track) {
-    if (this.drop) this.releaseDrop({ slip: false });
     this.stopSource();
     this.buffer = buffer;
     this.track = track;
@@ -497,7 +480,6 @@ export class Deck {
 
   pause() {
     if (!this.playing) return;
-    if (this.drop) this.releaseDrop({ slip: false }); // pausing (or grabbing the record) ends a build
     this.pausedPos = this.position;
     this.stopSource();
     this.playing = false;
@@ -510,7 +492,6 @@ export class Deck {
 
   seek(t) {
     if (!this.buffer) return;
-    if (this.drop) this.releaseDrop({ slip: false });
     const pos = Math.max(0, Math.min(t, this.duration));
     if (this.loop && (pos < this.loop.start || pos >= this.loop.end)) this.loop = null;
     if (this.playing) this.startSource(pos);
@@ -540,13 +521,6 @@ export class Deck {
       this.startTime = this.ctx.currentTime;
       if (this.loop && pos < this.loop.start) this.loop = null;
     }
-    if (this.drop && this.ctx.currentTime >= this.drop.tStart) {
-      // Keep the slip position exact through tempo moves (nudge, sync, the slider).
-      const d = this.drop;
-      d.startPos = this.slipPosition();
-      d.tStart = this.ctx.currentTime;
-      d.rate = rate;
-    }
     this.rate = rate;
     for (const s of this.sources) s.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
     if (this.keyLock) this.sendFx(); // pitch correction follows the tempo
@@ -575,10 +549,9 @@ export class Deck {
     return Math.abs(snapped - pos) < period * 0.25 ? Math.max(0, snapped) : pos;
   }
 
-  /** `at` pins the loop start (track seconds) instead of taking the beat under the playhead. */
-  setLoop(beats, at = null) {
+  setLoop(beats) {
     if (!this.buffer) return;
-    if (at == null && this.loop && this.loop.beats === beats) {
+    if (this.loop && this.loop.beats === beats) {
       this.exitLoop();
       return;
     }
@@ -591,7 +564,6 @@ export class Deck {
       start = Math.max(0, this.track.beatOffset + n * period);
     }
     if (this.loop) start = this.loop.start; // resizing keeps the start
-    if (at != null) start = at;
     const end = Math.min(this.duration, start + beats * period);
     if (end - start < 0.02) return;
     this.loop = { start, end, beats };
@@ -625,119 +597,7 @@ export class Deck {
     this.emit('loop');
   }
 
-  // ---------------------------------------------------------------- DROP macro
-
-  /**
-   * Beat-synced build-up and drop. Starts on the next beat; through the build the
-   * loop roll shortens (1 → ½ → ¼ → ⅛ beat), the high-pass sweeps 20 Hz → 1 kHz and
-   * a noise riser fades in. On beat 1 of the first bar at least 8 beats away it all
-   * lets go and the track carries on where it would have been (slip mode).
-   * Filter and riser run on the audio clock; loop steps and the release are timers,
-   * and the release jumps to the exact slip position whenever the timer fires.
-   */
-  startDrop() {
-    const bars = this.bars;
-    if (this.drop || !this.playing || !bars) return false;
-    const ctx = this.ctx;
-    const period = 60 / this.bpm;
-    const now = ctx.currentTime;
-    const pos = this.position;
-    const off = this.track.beatOffset;
-    const n = bars.beatsPerBar;
-    const nb = Math.ceil((pos - off) / period + 0.05); // next beat, with a little lead time
-    const one = Math.round((bars.downbeat - off) / period); // index of some beat 1
-    let dropIdx = nb + 8;
-    while ((((dropIdx - one) % n) + n) % n) dropIdx++;
-    const startPos = off + nb * period;
-    const tStart = now + (startPos - pos) / this.rate;
-    const tDrop = tStart + ((dropIdx - nb) * period) / this.rate;
-    const d = (this.drop = { startPos, tStart, tDrop, period, rate: this.rate, timers: [] });
-    const at = (t, fn) => d.timers.push(setTimeout(fn, Math.max(0, (t - ctx.currentTime) * 1000 - 5)));
-
-    // Loop roll: four steps spread over the build, each on a beat, each capturing
-    // the beat the track would be on by then (a roll, not a frozen loop).
-    const beats = dropIdx - nb;
-    [1, 1 / 2, 1 / 4, 1 / 8].forEach((size, i) => {
-      const k = Math.round((i * beats) / 4);
-      // Guarded: a step whose fade straddles the release must not bring the loop back.
-      at(tStart + (k * period) / this.rate, () => this.fadeSwap(() => this.drop === d && !d.cancelling && this.setLoop(size, startPos + k * period)));
-    });
-
-    // High-pass sweep on the deck's own filter.
-    const hp = this.hp.frequency;
-    hp.cancelScheduledValues(now);
-    hp.setValueAtTime(hp.value, now);
-    hp.setValueAtTime(20, tStart);
-    hp.exponentialRampToValueAtTime(1000, tDrop);
-
-    // White-noise riser, brightening as it swells.
-    const noise = ctx.createBufferSource();
-    noise.buffer = noiseBuffer(ctx);
-    noise.loop = true;
-    const tone = ctx.createBiquadFilter();
-    tone.type = 'highpass';
-    tone.frequency.setValueAtTime(400, tStart);
-    tone.frequency.exponentialRampToValueAtTime(6000, tDrop);
-    noise.connect(tone).connect(this.riser);
-    noise.start(tStart);
-    const g = this.riser.gain;
-    g.cancelScheduledValues(now);
-    g.setValueAtTime(0.0001, tStart);
-    g.exponentialRampToValueAtTime(0.3, tDrop);
-    d.noise = noise;
-
-    at(tDrop, () => this.releaseDrop());
-    this.emit('drop');
-    return true;
-  }
-
-  /** Where the track would be now if the macro hadn't looped it. */
-  slipPosition(t = this.ctx.currentTime) {
-    const d = this.drop;
-    return t < d.tStart ? this.position : d.startPos + (t - d.tStart) * d.rate;
-  }
-
-  /** Pressed again mid-build: let go on the next beat of the slip position. */
-  cancelDrop() {
-    const d = this.drop;
-    if (!d || d.cancelling) return;
-    d.cancelling = true;
-    d.timers.forEach(clearTimeout);
-    const now = this.ctx.currentTime;
-    const ghost = this.slipPosition(now);
-    const off = this.track.beatOffset;
-    const next = off + Math.ceil((ghost - off) / d.period + 0.05) * d.period;
-    d.timers = [setTimeout(() => this.releaseDrop(), Math.max(0, ((next - ghost) / d.rate) * 1000 - 5))];
-    this.emit('drop');
-  }
-
-  /** End the macro. slip: carry on at the slip position (drop / cancel); else just stop it (pause, seek, load). */
-  releaseDrop({ slip = true } = {}) {
-    const d = this.drop;
-    if (!d) return;
-    d.timers.forEach(clearTimeout);
-    const finish = () => {
-      const ghost = this.slipPosition();
-      this.drop = null;
-      this.loop = null;
-      if (slip && this.playing) this.startSource(Math.min(ghost, this.duration));
-      this.setFilter(this.filterX);
-      const t = this.ctx.currentTime;
-      const g = this.riser.gain;
-      g.cancelScheduledValues(t);
-      g.setValueAtTime(g.value, t);
-      g.linearRampToValueAtTime(0, t + 0.004);
-      try {
-        d.noise.stop(t + 0.02);
-      } catch {}
-      this.emit('loop');
-      this.emit('drop');
-    };
-    if (slip && this.playing) this.fadeSwap(finish);
-    else finish();
-  }
-
-  /** Dip the deck for ~4 ms around a jump so loop steps and the release don't click. */
+  /** Dip the deck for ~4 ms around a jump (e.g. key lock re-anchoring) so it doesn't click. */
   fadeSwap(fn) {
     const g = this.bus.gain;
     const t = this.ctx.currentTime;
@@ -754,9 +614,25 @@ export class Deck {
   }
 
   /**
-   * Match tempo, then line up the grids: whole bars (beat 1 on beat 1) when both
-   * decks are in the same time signature at the same tempo octave, beats otherwise.
+   * Snap to beat: how far to move `pos` (track seconds, at most half a step either
+   * way; a step is 1/div beat) so it sits on a step lined up with `other`'s. Without a usable
+   * other deck it just rounds to this track's own nearest beat.
    */
+  beatSnap(pos, other, div = 1) {
+    const t = this.track;
+    if (!this.bpm || t?.beatOffset == null) return 0;
+    const per = 60 / this.bpm;
+    let target = 0; // phase (0..1) the beat should land on
+    if (other && other !== this && other.playing && other.bpm && other.track?.beatOffset != null) {
+      const k = [1, 2, 0.5].find((m) => Math.abs((this.effectiveBpm * m) / other.effectiveBpm - 1) < 0.02);
+      if (k) target = frac((((other.position - other.track.beatOffset) / (60 / other.bpm)) / k) * div);
+    }
+    let d = target - frac(((pos - t.beatOffset) / per) * div); // in steps of 1/div beat
+    if (d > 0.5) d -= 1;
+    if (d < -0.5) d += 1;
+    return (d * per) / div;
+  }
+
   /**
    * Tempo only: play at the other deck's BPM (closest octave, e.g. 87 ↔ 174).
    * Returns the BPM it matched, or 0 when there's no BPM or it's too far to reach.
@@ -771,6 +647,10 @@ export class Deck {
     return target;
   }
 
+  /**
+   * Match tempo, then line up the grids: whole bars (beat 1 on beat 1) when both
+   * decks are in the same time signature at the same tempo octave, beats otherwise.
+   */
   syncTo(other) {
     const target = this.matchTempo(other);
     if (!target) return false;
@@ -822,10 +702,7 @@ export class Deck {
 
   /** One-knob filter: -1 = low-pass closed, 0 = off, +1 = high-pass closed. */
   setFilter(x) {
-    this.filterX = x;
     const t = this.ctx.currentTime;
-    this.lp.frequency.cancelScheduledValues(t); // drop any macro sweep still scheduled
-    this.hp.frequency.cancelScheduledValues(t);
     if (x < -0.02) {
       const f = 22000 * Math.pow(150 / 22000, -x);
       this.lp.frequency.setTargetAtTime(f, t, 0.01);
