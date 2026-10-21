@@ -3,7 +3,6 @@ name: Release builds
 # Builds Windows x64, Windows ARM64 and macOS (universal) zips for a tag and
 # attaches them to that tag's GitHub Release (as a pre-release).
 # Run it by hand for an existing tag, or it runs on its own when a v* tag is pushed.
-# A manual run for a tag that doesn't exist yet creates it on the given commit (default: the run's branch head).
 
 on:
   workflow_dispatch:
@@ -12,10 +11,6 @@ on:
         description: Tag to build
         required: true
         default: v0.3.0-beta
-      commit:
-        description: Commit to tag if the tag doesn't exist yet (default the branch head)
-        required: false
-        default: ''
   push:
     tags: ['v*']
 
@@ -29,26 +24,7 @@ env:
   PACKAGER_IGNORE: ^/(dist|out|vendor|test|scripts|node_modules|\.github)($|/)
 
 jobs:
-  tag:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create the tag if it's missing
-        env:
-          COMMIT: ${{ inputs.commit || github.sha }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          # Through the Releases API: a plain git push of the tag is refused for the workflow token.
-          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" > /dev/null 2>&1; then
-            echo "$TAG already exists"
-          else
-            gh release create "$TAG" --target "$COMMIT" --prerelease --title "OpenDJ ${TAG#v}" --notes "Builds are on the way."
-          fi
-
   windows:
-    needs: tag
-    if: ${{ !cancelled() && needs.tag.result != 'failure' }}
     runs-on: windows-latest
     strategy:
       matrix:
@@ -88,8 +64,6 @@ jobs:
           if-no-files-found: error
 
   mac:
-    needs: tag
-    if: ${{ !cancelled() && needs.tag.result != 'failure' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -157,7 +131,6 @@ jobs:
 
   release:
     needs: [windows, mac]
-    if: ${{ !cancelled() && needs.windows.result == 'success' && needs.mac.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
