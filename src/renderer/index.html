@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self'" />
+        content="default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob:; connect-src 'self'" />
   <title>Commons DJ (no license gate)</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -204,12 +204,12 @@
     <div class="keys">
       <div>
         <h3 class="a">Deck A</h3>
-        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync to B</p><p><kbd>V</kbd> drop</p>
+        <p><kbd>X</kbd> play / pause</p><p><kbd>Z</kbd> cue</p><p><kbd>C</kbd> sync / unlock</p><p><kbd>V</kbd> drop</p>
         <p><kbd>1</kbd>–<kbd>4</kbd> hot cues</p><p><kbd>Q</kbd> / <kbd>W</kbd> nudge (hold)</p>
       </div>
       <div>
         <h3 class="b">Deck B</h3>
-        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync to A</p><p><kbd>N</kbd> drop</p>
+        <p><kbd>,</kbd> play / pause</p><p><kbd>M</kbd> cue</p><p><kbd>.</kbd> sync / unlock</p><p><kbd>N</kbd> drop</p>
         <p><kbd>7</kbd>–<kbd>0</kbd> hot cues</p><p><kbd>O</kbd> / <kbd>P</kbd> nudge (hold)</p>
       </div>
       <div>
@@ -313,7 +313,7 @@
         <div class="row transport">
           <button class="pad cue" title="Cue: set or jump back to the cue point">Cue</button>
           <button class="pad play" title="Play / pause">▶</button>
-          <button class="pad sync" title="Match tempo and beat to the other deck">Sync</button>
+          <button class="pad sync" title="Sync: match tempo and beat to the other deck and keep the tempos locked together. Press again to unlock.">Sync</button>
           <button class="pad drop" title="Build-up and drop: loop roll, filter sweep and riser, then everything lets go on the next bar (V / N). Press again to cancel.">Drop</button>
           <div class="nudge">
             <button class="mini nudge-back" title="Nudge back (hold)">◀◀</button>

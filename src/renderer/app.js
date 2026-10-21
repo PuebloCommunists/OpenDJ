@@ -329,6 +329,11 @@ function buildDeck(name) {
     }
     if (type === 'loop' || type === 'load') d.loops.forEach((b) => b.classList.toggle('on', deck.loop?.beats === Number(b.dataset.beats)));
     if (type === 'rate' || type === 'load' || type === 'sync') renderTempo(name);
+    if (type === 'rate') followTempo(name);
+    if (type === 'load' && syncLinked.delete(name)) {
+      if (syncLinked.size < 2) syncLinked.clear(); // a new track starts unlinked
+      renderSyncLights();
+    }
     if (type === 'sync') syncTempoSlider(name);
     if (type === 'drop') {
       d.drop.classList.toggle('on', !!deck.drop);
@@ -443,7 +448,27 @@ function toggleDrop(name) {
   if (!deck.startDrop()) toast(`Deck ${name} needs a beat grid for Drop (try TAP).`);
 }
 
+// Sync lock: decks synced together stay tempo-locked. Move any one's tempo and the
+// rest follow at the same BPM (nudges don't spread: they're silent rate changes).
+const syncLinked = new Set();
+const renderSyncLights = () => DECKS.forEach((n) => ui[n].sync.classList.toggle('on', syncLinked.has(n)));
+let following = false;
+function followTempo(name) {
+  if (following || !syncLinked.has(name)) return;
+  following = true; // the followers' own rate events must not bounce back
+  for (const n of syncLinked) {
+    if (n !== name && mixer.decks[n].matchTempo(mixer.decks[name])) syncTempoSlider(n);
+  }
+  following = false;
+}
+
 function doSync(name) {
+  if (syncLinked.has(name)) {
+    // Pressed again: unlock this deck (a lone remaining deck isn't linked to anything).
+    syncLinked.delete(name);
+    if (syncLinked.size < 2) syncLinked.clear();
+    return renderSyncLights();
+  }
   const deck = mixer.decks[name];
   const other = mixer.decks[partnerDeck(name)];
   if (!deck.track || !other.track) return toast('Load a track on another deck to sync to.');
@@ -451,8 +476,9 @@ function doSync(name) {
   if (!deck.syncTo(other)) return toast('Tempos are too far apart to sync.', 'error');
   if (deck.lastSync === 'beat' && deck.bars && other.bars && deck.bars.beatsPerBar !== other.bars.beatsPerBar)
     toast(`Synced beats only — deck ${name} is in ${deck.bars.beatsPerBar}/4, deck ${other.name} in ${other.bars.beatsPerBar}/4.`);
-  ui[name].sync.classList.add('on');
-  setTimeout(() => ui[name].sync.classList.remove('on'), 500);
+  syncLinked.add(name);
+  syncLinked.add(other.name);
+  renderSyncLights();
 }
 
 const fmtSemis = (s) => {

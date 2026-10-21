@@ -3,6 +3,8 @@
 // speed) unless key lock is on. Each deck runs through a deck-fx worklet
 // (key shift / key lock / stems) before its EQ.
 
+import SignalsmithStretch from './lib/SignalsmithStretch.mjs';
+
 const dbToGain = (db) => Math.pow(10, db / 20);
 
 // Two seconds of white noise, made once per context (the DROP riser loops it).
@@ -206,13 +208,13 @@ export class Deck {
     });
     this.bus.disconnect();
     this.bus.connect(this.fx);
-    this.fx.connect(this.trim);
+    this.fx.connect(this.stretchOn ? this.stretch : this.trim);
     this.emit('fx');
   }
 
   attachScratch() {
     this.scratchNode = new AudioWorkletNode(this.ctx, 'scratch', { numberOfInputs: 0, outputChannelCount: [2] });
-    this.scratchNode.connect(this.bus); // through key shift, EQ and faders like normal playback
+    this.scratchNode.connect(this.stretchOn ? this.trim : this.bus); // through key shift, EQ and faders like normal playback
     if (this.buffer) this.sendScratchBuffer();
   }
 
@@ -267,7 +269,58 @@ export class Deck {
   sendFx() {
     // With AI stems the stem levels are applied by aiGains, so the DSP masks stay off.
     const stems = this.aiStems ? { vocals: 1, drums: 1, instruments: 1 } : this.stems;
-    this.fx?.port.postMessage({ pitch: this.pitchFactor, stems });
+    // Pitch goes through Signalsmith Stretch once it's running; the fx node's own
+    // phase vocoder only covers the moment it takes to load (or if it can't).
+    this.fx?.port.postMessage({ pitch: this.stretchOn ? 1 : this.pitchFactor, stems });
+    this.updateStretch();
+  }
+
+  /**
+   * Key lock / key shift through Signalsmith Stretch (much cleaner than the fx
+   * node's phase vocoder). It adds a fixed delay, so while it's in the chain the
+   * sources play `lead` seconds ahead (see startSource) and what you hear stays
+   * exactly on the beat grid.
+   */
+  updateStretch() {
+    const f = this.pitchFactor;
+    const want = Math.abs(f - 1) > 1e-4;
+    if (want && !this.stretch) {
+      this.stretchLoading ??= SignalsmithStretch(this.ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] })
+        .then(async (node) => {
+          this.stretchLatency = await node.latency();
+          node.start();
+          this.stretch = node;
+          this.updateStretch();
+        })
+        .catch((err) => console.error('Signalsmith Stretch unavailable, using the built-in pitch shifter:', err));
+      return;
+    }
+    if (!this.stretch) return;
+    if (want) this.stretch.schedule({ semitones: 12 * Math.log2(f) });
+    if (want !== !!this.stretchOn) this.routeStretch(want);
+  }
+
+  routeStretch(on) {
+    const src = this.fx || this.bus;
+    const swap = () => {
+      src.disconnect();
+      if (on) {
+        src.connect(this.stretch);
+        this.stretch.connect(this.trim);
+      } else {
+        this.stretch.disconnect();
+        src.connect(this.trim);
+      }
+      // The scratch voice skips the stretcher so the record answers your hand without its delay.
+      this.scratchNode?.disconnect();
+      this.scratchNode?.connect(on ? this.trim : this.bus);
+      this.stretchOn = on;
+      this.lead = on ? this.stretchLatency : 0;
+      this.sendFx();
+      if (this.playing) this.startSource(this.position); // re-anchor for the new delay
+    };
+    if (this.playing) this.fadeSwap(swap);
+    else swap();
   }
 
   /** Apply the VOX / DRUMS / INST levels to the AI stem gains (INST = bass + other). */
@@ -402,7 +455,10 @@ export class Deck {
       ? AI_STEM_NAMES.map((n) => [this.aiStems[n], this.aiGains[n]])
       : [[this.buffer, this.input]];
     const when = this.ctx.currentTime;
-    const offset = Math.max(0, Math.min(at, this.duration - 0.001));
+    // Read ahead by the stretcher's delay (lead = 0 without it); inside a loop, wrap into it.
+    let offset = at + (this.lead || 0) * this.rate;
+    if (this.loop && offset >= this.loop.end) offset = this.loop.start + ((offset - this.loop.start) % (this.loop.end - this.loop.start));
+    offset = Math.max(0, Math.min(offset, this.duration - 0.001));
     for (const [buffer, dest] of plan) {
       const s = this.ctx.createBufferSource();
       s.buffer = buffer;
@@ -701,15 +757,23 @@ export class Deck {
    * Match tempo, then line up the grids: whole bars (beat 1 on beat 1) when both
    * decks are in the same time signature at the same tempo octave, beats otherwise.
    */
-  syncTo(other) {
-    if (!this.bpm || !other.effectiveBpm) return false;
-    let target = other.effectiveBpm;
-    // Choose the closest octave (e.g. 87 ↔ 174).
-    const candidates = [target, target * 2, target / 2];
-    target = candidates.reduce((a, b) => (Math.abs(b - this.bpm) < Math.abs(a - this.bpm) ? b : a));
+  /**
+   * Tempo only: play at the other deck's BPM (closest octave, e.g. 87 ↔ 174).
+   * Returns the BPM it matched, or 0 when there's no BPM or it's too far to reach.
+   */
+  matchTempo(other, opts) {
+    if (!this.bpm || !other.effectiveBpm) return 0;
+    const candidates = [other.effectiveBpm, other.effectiveBpm * 2, other.effectiveBpm / 2];
+    const target = candidates.reduce((a, b) => (Math.abs(b - this.bpm) < Math.abs(a - this.bpm) ? b : a));
     const rate = target / this.bpm;
-    if (rate < 0.5 || rate > 1.5) return false;
-    this.setRate(rate);
+    if (rate < 0.5 || rate > 1.5) return 0;
+    this.setRate(rate, opts);
+    return target;
+  }
+
+  syncTo(other) {
+    const target = this.matchTempo(other);
+    if (!target) return false;
 
     const mine = this.bars;
     const theirs = other.bars;
