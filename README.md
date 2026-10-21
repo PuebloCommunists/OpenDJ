@@ -11,6 +11,14 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.4-beta
+
+- **Snap to beat:** Off / 1 / 1/2 / 1/4. Dragging the waveform, record or overview, and pressing play, land on the nearest step lined up with the other deck.
+- **Zoom in beats:** waveform zoom is set as beats shown (4–64, in Settings; `-` / `+` halve or double it), so synced decks line up beat for beat.
+- **4-deck XY pad:** in 4-deck mode the crossfader becomes an XY pad (A B on top, C D at the bottom). Compact decks hide the artist line to fit.
+- **Hot cues** show their timestamp on the pad and stay visible in 4-deck mode.
+- **DROP removed:** the Drop button, V / N keys and riser are gone.
+
 ## What's new in 0.3.3-beta
 
 - **Mist theme:** a softer bright theme (soft grey, off-white panels, slate text) in **⚙ Settings**.
