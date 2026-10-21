@@ -571,7 +571,7 @@ body.browse-max .browser { position: fixed; top: 52px; left: 0; right: 0; bottom
 
 /* ------------------------------------------------------------------ 4 decks
    C (left, with A) and D (right, with B). Hidden in 2-deck mode. In 4-deck mode the
-   decks stack two per side and go compact: no record, hot cues or key row. */
+   decks stack two per side and go compact: no record or hot cues. */
 :root { --c: #b57bff; --c-soft: rgba(181, 123, 255, 0.16); --d: #a3e635; --d-soft: rgba(163, 230, 53, 0.15); }
 body[data-theme='aloe'] { --c: #7b4fd6; --c-soft: rgba(123, 79, 214, 0.14); --d: #4d8f10; --d-soft: rgba(77, 143, 16, 0.14); }
 body[data-theme='cherry'] { --c: #c9a0ff; --c-soft: rgba(201, 160, 255, 0.16); --d: #ffd166; --d-soft: rgba(255, 209, 102, 0.15); }
@@ -596,17 +596,17 @@ body.decks-4 .lib .c-load { width: 148px; }
 .console { grid-template-areas: 'a m b'; }
 body.decks-4 .console { grid-template-columns: 1fr 340px 1fr; grid-template-areas: 'a m b' 'c m d'; padding-top: 4px; }
 body.decks-4 .waves { gap: 3px; }
-body.decks-4 .wave-row { height: 32px; }
+body.decks-4 .wave-row { height: 24px; }
 body.decks-4 .deck { padding: 8px 10px; gap: 5px; }
-body.decks-4 .platter, body.decks-4 .hotcues, body.decks-4 .keyrow, body.decks-4 .readouts::after { display: none; }
-body.decks-4 .overview { height: 28px; }
+body.decks-4 .platter, body.decks-4 .hotcues, body.decks-4 .readouts::after { display: none; }
+body.decks-4 .overview { height: 22px; }
 body.decks-4 .pad { height: 30px; }
 body.decks-4 .elapsed, body.decks-4 .bpm-eff { font-size: 19px; }
 body.decks-4 .tempo .tempo-slider { min-height: 70px; }
 body.decks-4 .strips { grid-template-columns: repeat(4, 1fr); gap: 4px; }
 body.decks-4 .strip { gap: 4px; }
 body.decks-4 .knob svg { width: 28px; height: 28px; }
-body.decks-4 .fader-wrap { height: 170px; } /* fixed: a stretchy fader would make both deck rows grow */
+body.decks-4 .fader-wrap { height: 140px; } /* fixed: a stretchy fader would make both deck rows grow */
 body.decks-4 .console { align-items: start; }
 body.decks-4 .mixer { align-self: stretch; justify-content: center; }
 body.decks-4 .mixer { padding: 10px 8px; }
