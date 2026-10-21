@@ -11,6 +11,10 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.2-beta
+
+- **4 decks:** every deck keeps its key row (key readout, key shift, Lock and **Match**) in 4-deck mode; waveforms and mixer faders are a little shorter so the library still fits.
+
 ## What's new in 0.3.1-beta
 
 - **4 decks:** ⚙ Settings → Decks switches between 2 and 4 decks. C and D get their own waveform, deck and mixer channel (mixer order C · A · B · D); A and C play on the crossfader's left, B and D on its right. Sync and Match follow a playing deck on the other side.
