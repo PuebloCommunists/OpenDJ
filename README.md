@@ -11,6 +11,12 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.3-beta
+
+- **Mist theme:** a softer bright theme (soft grey, off-white panels, slate text) in **⚙ Settings**.
+- **Fullscreen** (button and F11) now fullscreens the app window, so the Settings dialog stays on top instead of getting stuck behind the page.
+- **Tidier Settings:** theme cards fit on one row, with more space between sections.
+
 ## What's new in 0.3.2-beta
 
 - **4 decks:** every deck keeps its key row (key readout, key shift, Lock and **Match**) in 4-deck mode; waveforms and mixer faders are a little shorter so the library still fits.
