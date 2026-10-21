@@ -52,5 +52,6 @@ contextBridge.exposeInMainWorld('cdj', {
       return () => ipcRenderer.removeListener('stems:progress', handler);
     },
   },
+  toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 });

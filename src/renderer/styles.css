@@ -364,9 +364,26 @@ body[data-theme='aloe'] {
   color-scheme: light;
   background-image: radial-gradient(ellipse at 10% 0%, rgba(120, 200, 140, 0.25), transparent 50%), radial-gradient(ellipse at 100% 100%, rgba(90, 180, 120, 0.18), transparent 55%);
 }
-body[data-theme='aloe'] .deck, body[data-theme='aloe'] .mixer, body[data-theme='aloe'] .table-wrap, body[data-theme='aloe'] .wave-row { box-shadow: 0 1px 2px rgba(18, 64, 34, 0.06), 0 4px 14px rgba(18, 64, 34, 0.06); }
-body[data-theme='aloe'] .hslider:not(.xf)::-webkit-slider-thumb, body[data-theme='aloe'] .vslider::-webkit-slider-thumb { background: #fff; box-shadow: 0 1px 4px rgba(18, 64, 34, 0.35), inset 0 0 0 1px rgba(18, 64, 34, 0.15); }
+body:is([data-theme='aloe'], [data-theme='mist']) .deck, body:is([data-theme='aloe'], [data-theme='mist']) .mixer, body:is([data-theme='aloe'], [data-theme='mist']) .table-wrap, body:is([data-theme='aloe'], [data-theme='mist']) .wave-row { box-shadow: 0 1px 2px rgba(18, 64, 34, 0.06), 0 4px 14px rgba(18, 64, 34, 0.06); }
+body:is([data-theme='aloe'], [data-theme='mist']) .hslider:not(.xf)::-webkit-slider-thumb, body:is([data-theme='aloe'], [data-theme='mist']) .vslider::-webkit-slider-thumb { background: #fff; box-shadow: 0 1px 4px rgba(18, 64, 34, 0.35), inset 0 0 0 1px rgba(18, 64, 34, 0.15); }
 body[data-theme='aloe'] .btn.primary { background: var(--cc); color: #fff; }
+/* Mist: bright but easy on the eyes. Soft grey ground, off-white panels, slate text, muted deck colours. */
+body[data-theme='mist'] {
+  --bg: #d3d7dc; --panel: #e7e9ec; --panel-2: #dadde1; --panel-3: #c9ced4;
+  --line: rgba(30, 38, 48, 0.08); --line-2: rgba(30, 38, 48, 0.16);
+  --text: #1e252d; --muted: #56606b; --dim: #808994;
+  --a: #d4622f; --a-soft: rgba(212, 98, 47, 0.14);
+  --b: #2f6db0; --b-soft: rgba(47, 109, 176, 0.14);
+  --c: #7656c2; --c-soft: rgba(118, 86, 194, 0.14);
+  --d: #4f8420; --d-soft: rgba(79, 132, 32, 0.14);
+  --cc: #2a8455; --warn: #a86f1c; --bad: #c43846;
+  --on-accent: #ffffff;
+  color-scheme: light;
+}
+body[data-theme='mist'] .btn.primary { background: var(--text); color: var(--panel); }
+body[data-theme='mist'] ::-webkit-scrollbar-thumb { background: #b3bac2; }
+.swatch.mist { background: #d3d7dc; }
+.swatch.mist i:nth-child(1) { background: #e7e9ec; } .swatch.mist i:nth-child(2) { background: #d4622f; } .swatch.mist i:nth-child(3) { background: #2f6db0; }
 body[data-theme='aloe'] ::-webkit-scrollbar-thumb { background: #b9d3bd; }
 
 /* Cherry: deep cherry red with a faint cherry wallpaper; deck A cherry red, deck B blossom pink. */
@@ -393,7 +410,8 @@ body[data-theme='cherry'] .vinyl-label { background: radial-gradient(circle, #d8
 .set-grid .hslider { width: 100%; }
 .set-grid .btn { justify-self: start; }
 .set-section h3 { margin-top: 6px; }
-.theme-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.theme-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px; }
+.set-section + .set-section { margin-top: 16px; }
 .theme-card {
   display: grid; gap: 4px; justify-items: start; text-align: left; padding: 12px;
   background: var(--panel-2); border: 0; border-radius: var(--radius); box-shadow: inset 0 0 0 2px transparent;

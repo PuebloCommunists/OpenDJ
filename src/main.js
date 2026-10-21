@@ -799,6 +799,12 @@ function registerIpc() {
     return out.trim().split(/\r?\n/).pop();
   });
 
+  // Window-level fullscreen: page-level requestFullscreen would cover open dialogs (Settings).
+  ipcMain.handle('window:toggleFullscreen', () => {
+    mainWindow.setFullScreen(!mainWindow.isFullScreen());
+    return mainWindow.isFullScreen();
+  });
+
   ipcMain.handle('shell:openExternal', (_e, url) => {
     const u = validateUrl(url);
     return shell.openExternal(u);

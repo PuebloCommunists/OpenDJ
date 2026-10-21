@@ -1715,7 +1715,8 @@ function setupKeyboard() {
 const THEMES = {
   dark: { A: [255, 138, 61], B: [66, 182, 255], C: [181, 123, 255], D: [163, 230, 53], ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] },
   aloe: { A: [228, 87, 46], B: [28, 127, 196], C: [123, 79, 214], D: [77, 143, 16], ink: '18,48,28', shade: '251,254,251', hi: [96, 130, 108] },
-  cherry: { A: [255, 59, 92], B: [255, 163, 192], C: [201, 160, 255], D: [255, 209, 102], ink: '253,238,242', shade: '39,16,26', hi: [214, 168, 182] },
+  mist: { A: [212, 98, 47], B: [47, 109, 176], C: [118, 86, 194], D: [79, 132, 32], ink: '30,37,45', shade: '231,233,236', hi: [104, 112, 122] },
+  cherry: {A: [255, 59, 92], B: [255, 163, 192], C: [201, 160, 255], D: [255, 209, 102], ink: '253,238,242', shade: '39,16,26', hi: [214, 168, 182] },
 };
 function setTheme(name) {
   const t = THEMES[name] ? name : 'dark';
@@ -1763,9 +1764,11 @@ function setupSettings() {
 
   // Fullscreen (also F11).
   const fs = $('#setFullscreen');
-  const toggleFs = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
+  const toggleFs = async () => {
+    const full = await api.toggleFullscreen();
+    fs.textContent = full ? 'Exit fullscreen (F11)' : 'Enter fullscreen (F11)';
+  };
   fs.addEventListener('click', toggleFs);
-  document.addEventListener('fullscreenchange', () => (fs.textContent = document.fullscreenElement ? 'Exit fullscreen (F11)' : 'Enter fullscreen (F11)'));
   window.addEventListener('keydown', (e) => {
     if (e.key === 'F11') {
       e.preventDefault();
