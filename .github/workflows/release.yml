@@ -33,20 +33,17 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Create the tag if it's missing
         env:
           COMMIT: ${{ inputs.commit || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+          # Through the Releases API: a plain git push of the tag is refused for the workflow token.
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" > /dev/null 2>&1; then
             echo "$TAG already exists"
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$TAG" -m "OpenDJ ${TAG#v}" "$COMMIT"
-            git push origin "refs/tags/$TAG"
+            gh release create "$TAG" --target "$COMMIT" --prerelease --title "OpenDJ ${TAG#v}" --notes "Builds are on the way."
           fi
 
   windows:
