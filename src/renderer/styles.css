@@ -35,7 +35,7 @@ body {
   font: 13px/1.4 var(--sans);
   font-variant-numeric: tabular-nums;
   display: grid;
-  grid-template-rows: 52px auto auto minmax(170px, 1fr);
+  grid-template-rows: 52px auto auto minmax(var(--browser-h, 330px), 1fr); /* the browser always keeps room for a list */
   overflow: hidden;
   user-select: none;
   -webkit-font-smoothing: antialiased;
@@ -230,6 +230,7 @@ input[type='range']::-webkit-slider-runnable-track { background: var(--panel-3);
 .pad.play { width: 64px; font-size: 16px; }
 .pad.play.on, .pad.play.on:hover { background: var(--accent); color: var(--on-accent); }
 .pad.cue.on, .pad.sync.on { background: var(--accent-soft); color: var(--accent); }
+.sync-mult { min-width: 34px; margin-left: -2px; }
 .nudge { margin-left: auto; display: flex; gap: 4px; }
 .mini { height: 26px; padding: 0 9px; font: 500 12px/1 var(--sans); white-space: nowrap; }
 .mini.on, .mini.on:hover, .mini.tapping { background: var(--accent-soft); color: var(--accent); }
@@ -289,7 +290,11 @@ input[type='range']::-webkit-slider-runnable-track { background: var(--panel-3);
 .xfader span:last-child { color: var(--b); }
 
 /* ------------------------------------------------------------------ browser */
-.browser { display: flex; flex-direction: column; min-height: 0; padding: 0 16px 12px; }
+.browser { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 0 16px 12px; }
+.browser-grip { position: absolute; left: 50%; top: -6px; width: 64px; height: 12px; margin-left: -32px; cursor: ns-resize; z-index: 3; touch-action: none; }
+.browser-grip::before { content: ''; position: absolute; left: 14px; right: 14px; top: 4px; height: 4px; border-radius: 4px; background: var(--panel-3); transition: background-color 0.15s; }
+.browser-grip:hover::before, .browser-grip.grabbing::before, .browser-grip:focus-visible::before { background: var(--muted); }
+.panel:has(.cc-info:not([hidden])) .cc-note { display: none; } /* the notice only until the first results show */
 .tabs { display: flex; align-items: center; gap: 4px; height: 44px; }
 .tab {
   background: transparent; border: 0; border-radius: var(--r-ctl);
@@ -337,11 +342,6 @@ input[type='range']::-webkit-slider-runnable-track { background: var(--panel-3);
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -50% 0; } }
 
-/* Beat pulse: --pulse goes 1 → 0 over each beat while playing (set in app.js). */
-.deck-badge, .wave-tag { box-shadow: 0 0 0 calc(var(--pulse, 0) * 5px) var(--accent-soft, transparent); }
-.wave-row[data-deck='A'] { --accent-soft: var(--a-soft); }
-.wave-row[data-deck='B'] { --accent-soft: var(--b-soft); }
-.bpm-eff { text-shadow: 0 0 calc(var(--pulse, 0) * 14px) var(--accent); }
 
 .toast { transition: opacity 0.2s, transform 0.2s; }
 .toast.leaving { opacity: 0; transform: translateX(12px); }
@@ -453,7 +453,7 @@ body[data-theme='cherry'] .vinyl-label { background: radial-gradient(circle, #d8
 }
 .table-wrap::after { right: 12px; bottom: 10px; }
 .cc-bar { position: relative; }
-.cc-bar::after { position: absolute; right: -10px; top: -26px; width: 28px; height: 28px; transform: rotate(15deg); }
+.cc-bar::after { position: absolute; right: 0; top: -26px; width: 28px; height: 28px; transform: rotate(15deg); }
 .empty-title::before {
   content: ''; display: block; width: 56px; height: 56px; margin: 0 auto 10px;
   background: var(--cherry) center / contain no-repeat; filter: drop-shadow(0 4px 5px rgba(0, 0, 0, 0.5));
@@ -529,46 +529,48 @@ table.lib { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .spotify-keys .muted { flex: 1; min-width: 0; }
 .spotify-keys .field { min-width: 180px; }
 .spotify-keys a.open, .cc-note a.open { color: var(--text); cursor: pointer; text-decoration: underline; }
-.cc-note { color: var(--muted); font-size: 12px; margin: 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-note { color: var(--dim); font-size: 11px; margin: 5px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-status { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
 .cc-status.error { color: var(--bad); }
 .cc-results {
-  flex: 1; min-height: 0; overflow: auto; display: grid; gap: 8px; align-content: start;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  flex: 1; min-height: 0; overflow: auto; display: grid; gap: 4px 8px; align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   /* Rows must size to their content. With plain `auto` rows, the cards
      (overflow: hidden) collapsed to a sliver when the panel was short. */
   grid-auto-rows: max-content;
 }
 .cc-item {
-  display: grid; grid-template-columns: 160px 1fr auto; gap: 12px; align-items: center;
-  background: var(--panel); border-radius: var(--radius); padding: 8px;
+  display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: center;
+  background: var(--panel); border-radius: 10px; padding: 5px 8px 5px 5px;
   position: relative; overflow: hidden;
 }
-.cc-item img, .cc-item .thumb { width: 160px; aspect-ratio: 16 / 9; height: auto; object-fit: cover; border-radius: 8px; background: var(--panel-2); display: block; }
+.cc-item img, .cc-item .thumb { width: 64px; aspect-ratio: 16 / 9; height: auto; object-fit: cover; border-radius: 6px; background: var(--panel-2); display: block; }
 .cc-item .thumb-wrap { position: relative; }
 .cc-item .dur, .cc-item .rank {
   position: absolute; padding: 1px 5px; border-radius: 4px;
   background: rgba(0, 0, 0, 0.75); font: 600 11px/1.4 var(--sans);
 }
-.cc-item .dur { right: 4px; bottom: 4px; color: #fff; }
+.cc-item .dur { right: 2px; bottom: 2px; color: #fff; font-size: 10px; padding: 0 3px; }
 .cc-item .dur.long { background: var(--bad); }
-.cc-item .rank { left: 4px; top: 4px; color: var(--muted); font-size: 10px; }
+.cc-item .rank { display: none; } /* compact rows: the order already says it */
 .cc-item .meta { min-width: 0; }
 .cc-item .ttl {
   font-weight: 600; line-height: 1.3; overflow: hidden;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word;
+  white-space: nowrap; text-overflow: ellipsis; font-size: 13px;
 }
-.cc-item .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
-.cc-item .vid { color: var(--dim); font: 11px/1.4 var(--mono); user-select: text; }
-.cc-item .msg { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: normal; }
+.cc-item .sub { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.cc-item .vid { display: none; }
+.cc-item .msg { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-item .msg:empty { display: none; }
+.cc-item .btn { padding: 6px 12px; }
 .cc-item .msg.error { color: var(--bad); }
 .cc-item .bar { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--cc); width: 0; transition: width 0.2s; }
 .cc-item a.open { color: var(--muted); font-size: 11px; cursor: pointer; text-decoration: underline; }
 
 .cc-info {
   border-radius: var(--radius); background: var(--panel);
-  padding: 8px 12px; margin-bottom: 8px; font-size: 12px; color: var(--muted);
-  display: grid; gap: 4px;
+  padding: 5px 10px; margin-bottom: 6px; font-size: 11px; color: var(--muted);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px;
 }
 .cc-info[hidden] { display: none; }
 .cc-info summary { cursor: pointer; color: var(--muted); }
@@ -664,6 +666,39 @@ body.decks-4 .xfader { display: none; }
 }
 .xypad.grabbing .xy-puck { transform: scale(1.12); }
 
+/* Deck effects: one pill per effect: name toggles it, slider sets the intensity. */
+.fxrow .label { min-width: 34px; margin-right: 2px; }
+.fx {
+  position: relative; flex: 1; min-width: 0; height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 10px;
+  border-radius: 7px; background: var(--panel-2); overflow: hidden; cursor: ew-resize; touch-action: none;
+  font: 600 11px/1 var(--sans); color: var(--muted); transition: color 0.08s;
+}
+/* The fill is the intensity bar: faint when off, the deck's colour when on. */
+.fx-fill { position: absolute; inset: 0 auto 0 0; width: var(--fill, 50%); background: var(--panel-3); transition: width 0.05s linear, background-color 0.1s; }
+.fx.on { color: var(--text); }
+.fx.on .fx-fill { background: var(--accent-soft); box-shadow: inset -2px 0 0 var(--accent); }
+.fx-name, .fx-val, .fx-rate { position: relative; }
+.fx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-val { font-variant-numeric: tabular-nums; opacity: 0.6; }
+.fx.on .fx-val { color: var(--accent); opacity: 1; }
+.fx-rate { border: 0; background: transparent; color: inherit; font: 600 11px/1 var(--sans); padding: 4px 3px; border-radius: 4px; cursor: pointer; }
+.fx-rate:hover { background: var(--panel-3); }
+.fx:focus-visible { outline: 2px solid #8aa8ff; outline-offset: 1px; }
+
+/* Accessibility: a clear focus ring on every control, and roomier hit areas. */
+button:focus-visible, select:focus-visible, .knob:focus-visible { outline: 2px solid #8aa8ff; outline-offset: 2px; }
+.mini, .lp, .hc, .stem { min-height: 26px; }
+
+/* More cherries: on each deck's FX label, the browser grip, Expand, and Settings headings. */
+.fxrow .label::after, #browseMax::after, .set-section h3::after {
+  content: ''; display: inline-block; width: 13px; height: 13px; margin-left: 4px; vertical-align: -2px;
+  background: var(--cherry) center / contain no-repeat;
+}
+.browser-grip::after {
+  content: ''; position: absolute; left: 50%; top: -5px; width: 16px; height: 16px; margin-left: -8px;
+  background: var(--cherry) center / contain no-repeat; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45)); pointer-events: none;
+}
+
 /* ------------------------------------------------------------------ SFX pads */
 .sfx-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
 .sfx-bar .muted { flex: 1; }
@@ -733,3 +768,162 @@ kbd { font: 600 11px/1 var(--sans); background: var(--panel-3); border-radius: 5
   .platter { --size: 112px; padding: 5px; }
   .vinyl-label { font-size: 11px; }
 }
+
+/* ------------------------------------------------------------------ sleek layout
+   Each deck carries its own channel strip (gain, EQ, filter, fader, meter) on the
+   side facing the centre, so there's no separate mixer box: the middle only holds
+   the crossfader (or the XY pad with 4 decks). Tighter spacing, quicker motion. */
+.console { grid-template-columns: 1fr 160px 1fr; gap: 8px; padding: 4px 12px 8px; }
+body.decks-4 .console { grid-template-columns: 1fr 200px 1fr; }
+.mixer, body.decks-4 .mixer { background: transparent; padding: 0; justify-content: center; align-items: center; gap: 12px; }
+.mixer .strips { display: none; }
+.mixer::before { position: static; margin: 0 auto; display: block; }
+.xfader .xf, body.decks-4 .xfader .xf { width: 118px; }
+
+.deck { padding: 10px; gap: 6px; }
+.deck-body { gap: 10px; }
+.row { gap: 5px; }
+.deck .strip, body.decks-4 .deck .strip { align-items: flex-start;
+  flex: none; align-self: stretch; display: flex; gap: 8px; padding: 0 0 0 10px; border-left: 1px solid var(--line);
+}
+.deck[data-deck='B'] .strip, .deck[data-deck='D'] .strip { padding: 0 10px 0 0; border-left: 0; border-right: 1px solid var(--line); }
+.deck .strip::before { display: none; }
+.deck .knobs { justify-content: flex-start; gap: 6px; padding: 2px 0; }
+.deck .fader-wrap { height: 300px; padding: 4px 0; } /* fixed: a fader sized by its box would grow the deck */
+body.decks-4 .deck .fader-wrap { height: 200px; }
+.knob svg, body.decks-4 .knob svg { width: 30px; height: 30px; }
+.knob .k-label { font-size: 9px; }
+.waves { padding: 2px 12px 4px; gap: 3px; }
+.browser { padding: 0 12px 10px; }
+.tabs { height: 38px; }
+
+/* Snappier motion everywhere. */
+button { transition-duration: 0.08s; }
+.panel.on { animation-duration: 0.1s; }
+.dlg[open], .dlg[open]::backdrop { animation-duration: 0.12s; }
+.toast { animation-duration: 0.12s; }
+.deck.just-loaded .deck-title, .deck.just-loaded .vinyl-label { animation-duration: 0.2s; }
+
+/* More cherries: the active tab and the Snap label. */
+.tab.on::after, .seg-label::after {
+  content: ''; display: inline-block; width: 11px; height: 11px; margin-left: 4px; vertical-align: -1px;
+  background: var(--cherry) center / contain no-repeat;
+}
+
+/* ------------------------------------------------------------------ futuristic finish
+   Precise rather than flashy: hairline edges, a faint top-down sheen, slightly
+   sharper corners, monospaced readouts and small spaced-out uppercase labels. */
+:root { --radius: 10px; --r-ctl: 6px; }
+.deck, .wave-row, .table-wrap, .cc-item, .cc-info, .xypad, .dlg, .theme-card {
+  box-shadow: inset 0 0 0 1px var(--line);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 42%);
+}
+.label, .knob .k-label, .lib th, .set-section h3, .tab, .seg-label, .xy-tag, .count {
+  text-transform: uppercase; letter-spacing: 0.12em; font-size: 10px; font-weight: 600;
+}
+.tab { font-size: 11px; }
+.pad { text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; }
+.elapsed, .remain, .bpm-eff, .bpm-sub, .fx-val, .hc, .lib .num, .lib .c-key, .cc-item .dur, .key-read, .rate {
+  font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+}
+.elapsed, .bpm-eff { font-weight: 500; }
+.deck-badge, .wave-tag, .vinyl-label { font-family: var(--mono); }
+.meter, .meter-v { border-radius: 1px; }
+
+/* Bigger waveforms. */
+.wave-row, body .wave-row { height: 92px; }
+body.decks-4 .wave-row { height: 38px; }
+
+/* ------------------------------------------------------------------ fonts, square edges
+   Font is a setting (Settings → Font): Arial by default, plus Segoe UI, Playfair Display
+   and Dancing Script (both SIL Open Font License, see fonts/*-OFL.txt) and a monospace.
+   With the calligraphy font, readouts (times, BPM) stay in Arial so they read at a glance.
+   Corners: a subtle, consistent radius (8 px panels, 6 px controls). */
+@font-face { font-family: 'Playfair Display'; src: url('fonts/playfair-display-latin-400-normal.woff2') format('woff2'); font-weight: 400 500; font-display: swap; }
+@font-face { font-family: 'Playfair Display'; src: url('fonts/playfair-display-latin-600-normal.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+@font-face { font-family: 'Playfair Display'; src: url('fonts/playfair-display-latin-700-normal.woff2') format('woff2'); font-weight: 700 900; font-display: swap; }
+@font-face { font-family: 'Dancing Script'; src: url('fonts/dancing-script-latin-500-normal.woff2') format('woff2'); font-weight: 400 600; font-display: swap; }
+@font-face { font-family: 'Dancing Script'; src: url('fonts/dancing-script-latin-700-normal.woff2') format('woff2'); font-weight: 700 900; font-display: swap; }
+:root { --radius: 8px; --r-ctl: 6px; } /* subtle, consistent rounding */
+body { --sans: Arial, Helvetica, sans-serif; --mono: Arial, Helvetica, sans-serif; font-size: 13px; }
+body[data-font='segoe'] { --sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; --mono: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; }
+body[data-font='playfair'] { --sans: 'Playfair Display', Georgia, serif; --mono: 'Playfair Display', Georgia, serif; }
+body[data-font='script'] { --sans: 'Dancing Script', cursive; --mono: Arial, Helvetica, sans-serif; font-size: 15px; }
+body[data-font='mono'] { --sans: 'Cascadia Mono', Consolas, monospace; --mono: 'Cascadia Mono', Consolas, monospace; font-size: 12px; }
+body, button, input, select, textarea { font-family: var(--sans); }
+.font-cards { display: flex; flex-wrap: wrap; gap: 6px; }
+.font-card { border: 0; background: var(--panel-2); color: var(--text); padding: 8px 12px; font-size: 14px; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); }
+.font-card:hover { background: var(--panel-3); }
+.font-card[aria-checked='true'] { box-shadow: inset 0 0 0 2px var(--cc); }
+
+
+/* No flashing: the ending countdown just stays red. */
+.remain.ending { animation: none; }
+/* Readouts: normal spacing and lining, same-width figures (the tight mono spacing made digits collide). */
+.elapsed, .remain, .bpm-eff, .bpm-sub, .fx-val, .hc, .lib .num, .lib .c-key, .cc-item .dur, .key-read, .rate { letter-spacing: 0.01em; font-variant-numeric: lining-nums tabular-nums; }
+.elapsed, .bpm-eff { font-size: 24px; font-weight: 600; }
+
+/* ------------------------------------------------------------------ smarter space
+   The record sits on the deck's outer side with the time and BPM stacked beside it
+   (instead of floating between them); stems fill their row; a narrower middle. */
+.readouts { display: grid; grid-template-columns: auto 1fr; grid-template-areas: 'rec time' 'rec bpm'; column-gap: 18px; row-gap: 4px; align-items: end; }
+.readouts .platter { grid-area: rec; }
+.readouts .time { grid-area: time; }
+.readouts .bpm { grid-area: bpm; text-align: left; align-self: start; }
+.deck[data-deck='B'] .readouts, .deck[data-deck='D'] .readouts { grid-template-columns: 1fr auto; grid-template-areas: 'time rec' 'bpm rec'; }
+.deck[data-deck='B'] .readouts .time, .deck[data-deck='D'] .readouts .time { align-items: flex-end; }
+.deck[data-deck='B'] .readouts .bpm, .deck[data-deck='D'] .readouts .bpm { text-align: right; }
+.readouts::after { left: 8px; bottom: -6px; }
+.deck[data-deck='B'] .readouts::after, .deck[data-deck='D'] .readouts::after { left: auto; right: 8px; }
+.stemrow .stem { max-width: none; }
+.console { grid-template-columns: 1fr 118px 1fr; }
+body.decks-4 .console { grid-template-columns: 1fr 180px 1fr; }
+.xfader .xf, body.decks-4 .xfader .xf { width: 96px; }
+.xfader { gap: 6px; }
+
+
+/* Consistent corners: panels 8 px, controls 6 px, chips stay pills. */
+.deck, .wave-row, .table-wrap, .cc-item, .cc-info, .xypad, .theme-card, .font-card, .mv, .dlg { border-radius: 8px; }
+.pad, .mini, .hc, .loops .lp, .stem, .btn, .field, .fx, .load-btn, .seg, .tab, .tempo-range, .zoom button, .wave-tag, .deck-badge, .lic { border-radius: 6px; }
+.seg button { border-radius: 4px; }
+.overview { border-radius: 6px; }
+
+/* ------------------------------------------------------------------ music video screen
+   One screen in the middle, above the crossfader (or the XY pad), showing the
+   loudest deck's video. A small tag in the deck's colour says which one. */
+.console { grid-template-columns: 1fr 118px 1fr; }
+body.decks-4 .console { grid-template-columns: 1fr 180px 1fr; }
+.mv { position: relative; width: 100%; aspect-ratio: 16 / 9; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); border-radius: 8px; overflow: hidden; display: grid; place-items: center; }
+.mv[hidden], body.no-mv .mv { display: none; }
+.mv-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.2s; }
+.mv.has-video .mv-video { opacity: 1; }
+.mv.has-video .mv-get { display: none; }
+.mv-get { position: relative; border: 0; background: transparent; color: var(--muted); font: 600 11px/1.3 var(--sans); padding: 8px 10px; cursor: pointer; border-radius: 6px; }
+.mv-get:hover:not(:disabled) { color: var(--text); background: var(--panel-3); }
+.mv-get:disabled { cursor: default; }
+.mv-tag { position: absolute; left: 6px; top: 6px; font: 700 10px/1 var(--mono); padding: 3px 5px; border-radius: 4px; color: var(--on-accent); background: var(--a); }
+.mv[data-deck='B'] .mv-tag { background: var(--b); }
+.mv[data-deck='C'] .mv-tag { background: var(--c); }
+.mv[data-deck='D'] .mv-tag { background: var(--d); }
+.xfader .xf, body.decks-4 .xfader .xf { width: 96px; }
+
+/* Library thumbnails beside the titles. */
+.lib-thumb { display: inline-block; width: 36px; height: 20px; margin-right: 8px; vertical-align: -6px; border-radius: 3px; background: var(--panel-3); overflow: hidden; }
+.lib-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* The music video sits beside the waveforms (top right), as tall as the waveform rows;
+   without a video the waveforms take the full width. */
+.waves { --mvw: 338px; grid-template-columns: 1fr; }
+body.decks-4 .waves { --mvw: 296px; }
+.waves:has(#mvCenter:not([hidden])) { grid-template-columns: 1fr var(--mvw); }
+body.no-mv .waves { grid-template-columns: 1fr; }
+.waves .wave-row { grid-column: 1; }
+.waves .mv { grid-column: 2; grid-row: 1 / span 4; width: 100%; height: 100%; aspect-ratio: auto; }
+.waves:has(#mvCenter:not([hidden])) .zoom { right: calc(var(--mvw) + 22px); }
+.chip.snap { color: var(--muted); }
+.chip.snap.on { background: var(--cc); color: var(--bg); }
+/* Taller waveform rows give the video room: it's as tall as both rows, at 16:9. */
+.wave-row, body .wave-row { height: 118px; }
+body.decks-4 .wave-row { height: 46px; }
+.waves { --mvw: 425px; }
+body.decks-4 .waves { --mvw: 343px; }

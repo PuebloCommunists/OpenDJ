@@ -229,6 +229,8 @@ function buildDeck(name) {
     badge: $('.deck-badge', root),
     barpos: $('.barpos', root),
     vinyl: $('.vinyl', root),
+    mvUrl: null, // this deck's music video (blob URL), once fetched
+    mvAvailable: false, // a web track, so a video can be fetched
   };
   $('.vinyl-label', root).textContent = name;
   ui[name] = d;
@@ -239,6 +241,15 @@ function buildDeck(name) {
   });
   d.cue.addEventListener('click', () => deck.cue());
   d.sync.addEventListener('click', () => doSync(name));
+  // Sync ratio: ½× → 1× → 2×. A tempo-locked deck re-syncs straight away.
+  const multBtn = $('.sync-mult', root);
+  multBtn.addEventListener('click', () => {
+    deck.syncMult = { 0.5: 1, 1: 2, 2: 0.5 }[deck.syncMult || 1];
+    multBtn.textContent = { 0.5: '½×', 1: '1×', 2: '2×' }[deck.syncMult];
+    multBtn.classList.toggle('on', deck.syncMult !== 1);
+    // A new ratio changes which beats line up, so re-sync tempo and beat, not just tempo.
+    if (syncLinked.has(name)) deck.syncTo(mixer.decks[partnerDeck(name)]);
+  });
 
   const applyTempo = () => {
     const pct = (Number(d.tempo.value) / 1000) * Number(d.range.value);
@@ -314,10 +325,12 @@ function buildDeck(name) {
     };
     seekTo(e);
     d.overview.setPointerCapture(e.pointerId);
+    d.overview.classList.add('grabbing');
     const move = (ev) => seekTo(ev);
     d.overview.addEventListener('pointermove', move);
     d.overview.addEventListener('pointerup', () => {
       d.overview.removeEventListener('pointermove', move);
+      d.overview.classList.remove('grabbing');
       snapDeck(name);
     }, { once: true });
   });
@@ -330,6 +343,7 @@ function buildDeck(name) {
       if (deck.playing && !wasPlaying) snapDeck(name);
       wasPlaying = deck.playing;
     }
+    if (type === 'load') prepareVideo(name);
     if (type === 'load') {
       root.classList.remove('just-loaded');
       void root.offsetWidth; // restart the animation
@@ -346,6 +360,75 @@ function buildDeck(name) {
     if (type === 'key' || type === 'rate' || type === 'load' || type === 'sync' || type === 'fx') renderKey(name);
     if (type === 'stems' || type === 'load' || type === 'fx') renderStems(name);
   });
+
+  // Effects, djay-style: each pill is an intensity bar. Tap to switch it on or off;
+  // drag across it to set the intensity (dragging switches it on). Keyboard: Enter or
+  // Space toggles, arrow keys move the intensity.
+  const GATE_RATES = { 1: '¼', 2: '⅛', 4: '⅟₁₆' };
+  for (const box of $$('.fx', root)) {
+    const fx = box.dataset.fx;
+    const render = () => {
+      const s = deck.fxChain.state[fx];
+      const pct = Math.round(s.amount * 100);
+      box.classList.toggle('on', s.on);
+      box.style.setProperty('--fill', `${pct}%`);
+      $('.fx-val', box).textContent = `${pct}%`;
+      box.setAttribute('aria-valuenow', String(pct));
+      box.setAttribute('aria-valuetext', `${pct}%, ${s.on ? 'on' : 'off'}`);
+    };
+    const setAmount = (v) => {
+      deck.fxChain.set(fx, { amount: Math.min(1, Math.max(0, v)), on: true });
+      render();
+    };
+    const toggle = () => {
+      deck.fxChain.set(fx, { on: !deck.fxChain.state[fx].on });
+      render();
+    };
+    let press = null;
+    box.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.fx-rate') || e.button !== 0) return;
+      try {
+        box.setPointerCapture(e.pointerId);
+      } catch {}
+      press = { x: e.clientX, dragging: false };
+    });
+    box.addEventListener('pointermove', (e) => {
+      if (!press) return;
+      if (!press.dragging && Math.abs(e.clientX - press.x) < 4) return; // a tap, so far
+      press.dragging = true;
+      box.classList.add('dragging');
+      const r = box.getBoundingClientRect();
+      setAmount((e.clientX - r.left) / r.width);
+    });
+    const release = () => {
+      if (!press) return;
+      if (!press.dragging) toggle();
+      press = null;
+      box.classList.remove('dragging');
+    };
+    box.addEventListener('pointerup', release);
+    box.addEventListener('pointercancel', () => {
+      press = null;
+      box.classList.remove('dragging');
+    });
+    box.addEventListener('keydown', (e) => {
+      const s = deck.fxChain.state[fx];
+      if (e.key === 'Enter' || e.key === ' ') toggle();
+      else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') setAmount(s.amount + 0.05);
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') setAmount(s.amount - 0.05);
+      else return;
+      e.preventDefault();
+      e.stopPropagation(); // don't also move the crossfader or toggle playback
+    });
+    const rate = $('.fx-rate', box);
+    rate?.addEventListener('click', () => {
+      const div = { 1: 2, 2: 4, 4: 1 }[deck.fxChain.state.gate.div];
+      deck.fxChain.set('gate', { div });
+      deck.fxChain.syncGate();
+      rate.textContent = GATE_RATES[div];
+    });
+    render();
+  }
 
   setupDeckDrop(root, name);
   setupDeckDrop($(`.wave-row[data-deck="${name}"]`), name);
@@ -445,14 +528,114 @@ function setupSfx() {
   $('#sfxLevel').addEventListener('input', (e) => mixer.sfx.gain.setTargetAtTime(Number(e.target.value), mixer.ctx.currentTime, 0.01));
 }
 
+// ------------------------------------------------------------------ music videos
+// One screen in the middle shows the music video of the loudest deck: playing, with
+// its fader × crossfader the highest. A tie rolls a die, then sticks (no flicker);
+// it only switches when another deck is clearly louder.
+
+const mvScreen = { el: null, video: null, get: null, tag: null, deck: null };
+
+/** After a load: fetch the cached video in the background, or remember one can be fetched. */
+async function prepareVideo(name) {
+  const d = ui[name];
+  const t = mixer.decks[name].track;
+  if (d.mvUrl) URL.revokeObjectURL(d.mvUrl);
+  d.mvUrl = null;
+  d.mvAvailable = false;
+  if (!t) return;
+  const s = await api.video.status(t.id);
+  if (mixer.decks[name].track?.id !== t.id) return;
+  d.mvAvailable = s.available;
+  if (s.cached) getVideo(name);
+}
+
+async function getVideo(name) {
+  const d = ui[name];
+  const id = mixer.decks[name].track?.id;
+  if (!id || d.mvFetching) return;
+  d.mvFetching = true;
+  try {
+    const data = await api.video.get(id);
+    if (mixer.decks[name].track?.id === id) d.mvUrl = URL.createObjectURL(new Blob([data]));
+  } catch (err) {
+    toast(`Couldn't get the music video: ${cleanErr(err)}`, 'error');
+  } finally {
+    d.mvFetching = false;
+  }
+}
+
+const loudness = (n) => {
+  const deck = mixer.decks[n];
+  return deck.playing ? deck.fader.gain.value * deck.xfade.gain.value : 0;
+};
+
+/** Which deck the screen shows: the loudest with a video (or a fetchable one), tie → a die roll. */
+function pickVideoDeck() {
+  const options = activeDecks().filter((n) => ui[n].mvUrl || ui[n].mvAvailable);
+  if (!options.length) return null;
+  const cur = options.includes(mvScreen.deck) ? mvScreen.deck : null;
+  const best = Math.max(...options.map(loudness));
+  if (best <= 0.01) return cur || options[0]; // nothing audible: keep what's showing
+  if (cur && loudness(cur) >= best - 0.08) return cur; // stay unless another is clearly louder
+  const loudest = options.filter((n) => loudness(n) >= best - 0.02);
+  return loudest[Math.floor(Math.random() * loudest.length)]; // equally loud: roll the die
+}
+
+/** Show the chosen deck's video and keep it with that deck: play/pause, tempo, position. */
+function syncVideos() {
+  const s = mvScreen;
+  if (!s.el) return;
+  const name = document.body.classList.contains('no-mv') ? null : pickVideoDeck();
+  s.el.hidden = !name;
+  if (!name) {
+    if (!s.video.paused) s.video.pause();
+    s.deck = null;
+    return;
+  }
+  const d = ui[name];
+  if (s.deck !== name) {
+    s.deck = name;
+    s.tag.textContent = name;
+    s.el.dataset.deck = name;
+  }
+  s.el.classList.toggle('has-video', !!d.mvUrl);
+  s.get.disabled = !!d.mvFetching;
+  s.get.textContent = d.mvFetching ? (d.mvProgress != null ? `Getting video… ${d.mvProgress}%` : 'Getting video…') : `▶ Music video (deck ${name})`;
+  if (!d.mvUrl) {
+    if (s.video.getAttribute('src')) s.video.removeAttribute('src');
+    return;
+  }
+  if (s.video.getAttribute('src') !== d.mvUrl) s.video.src = d.mvUrl;
+  const v = s.video;
+  if (!v.duration) return;
+  const deck = mixer.decks[name];
+  const target = Math.min(deck.position, v.duration - 0.05);
+  v.playbackRate = Math.min(4, Math.max(0.25, deck.rate));
+  if (deck.playing) {
+    if (v.paused) v.play().catch(() => {});
+    if (Math.abs(v.currentTime - target) > 0.15) v.currentTime = target;
+  } else {
+    if (!v.paused) v.pause();
+    if (Math.abs(v.currentTime - target) > 0.04) v.currentTime = target; // scratching / dragging moves it
+  }
+}
+
+function setupVideoScreen() {
+  const el = $('#mvCenter');
+  Object.assign(mvScreen, { el, video: $('.mv-video', el), get: $('.mv-get', el), tag: $('.mv-tag', el) });
+  mvScreen.get.addEventListener('click', () => mvScreen.deck && getVideo(mvScreen.deck));
+  api.video.onProgress(({ trackId, percent }) => {
+    for (const name of DECKS) if (mixer.decks[name].track?.id === trackId) ui[name].mvProgress = Math.round(percent);
+  });
+}
+
 // Snap to beat (top-bar toggle): when you let go of a dragged waveform, record or
 // overview, the deck lands on the nearest beat lined up with the deck it plays against.
-const snapDiv = () => Number($('#snapSeg .on')?.dataset.snap || 0); // 0 off, else steps per beat
-const snapOn = () => snapDiv() > 0;
+const snapOn = () => $('#snapBtn').classList.contains('on');
 function snapDeck(name) {
   const deck = mixer.decks[name];
-  if (!snapOn() || !deck.buffer) return;
-  const shift = deck.beatSnap(deck.position, mixer.decks[partnerDeck(name)], snapDiv());
+  if (!snapOn() || !deck.buffer || state.startingTogether) return;
+  const shift = deck.magneticSnap(deck.position, mixer.decks[partnerDeck(name)]);
   if (Math.abs(shift) < 0.002) return;
   if (deck.playing) deck.fadeSwap(() => deck.seek(deck.position + shift));
   else deck.seek(deck.pausedPos + shift);
@@ -824,6 +1007,7 @@ function buildMixer() {
   for (const name of DECKS) {
     const deck = mixer.decks[name];
     const strip = $(`.strip[data-deck="${name}"]`);
+    $(`#deck${name} .deck-body`).append(strip); // each deck carries its own channel strip, facing the centre
     for (const el of $$('.knob', strip)) {
       const p = el.dataset.param;
       if (p === 'trim') new Knob(el, { min: -12, max: 12, value: 0, bipolar: true, onChange: (v) => deck.setTrim(v) });
@@ -839,19 +1023,17 @@ function buildMixer() {
     xf.value = 0.5;
     mixer.setCrossfader(0.5);
   });
-  const pickSnap = (v) => {
-    $$('#snapSeg button').forEach((b) => {
-      b.classList.toggle('on', b.dataset.snap === v);
-      b.setAttribute('aria-checked', String(b.dataset.snap === v));
-    });
+  const snap = $('#snapBtn');
+  const setSnap = (on) => {
+    snap.classList.toggle('on', on);
+    snap.setAttribute('aria-pressed', String(on));
     try {
-      localStorage.setItem('snap', v);
+      localStorage.setItem('snap', on ? 'on' : 'off');
     } catch {}
   };
-  $$('#snapSeg button').forEach((b) => b.addEventListener('click', () => pickSnap(b.dataset.snap)));
+  snap.addEventListener('click', () => setSnap(!snapOn()));
   try {
-    const saved = localStorage.getItem('snap');
-    pickSnap(saved === 'off' ? '0' : ['0', '1', '2', '4'].includes(saved) ? saved : '1');
+    setSnap(!['off', '0'].includes(localStorage.getItem('snap')));
   } catch {}
 
   // 4-deck XY pad: x = left (A, C) to right (B, D), y = top (A, B) to bottom (C, D).
@@ -987,19 +1169,26 @@ function drawScrolling(name) {
     // Beat grid
     const t = deck.track;
     if (t?.bpm && t.beatOffset != null) {
+      // Ruler: [length px, opacity] for bar, beat, ½, ¼, ⅛, ⅟₁₆ lines.
+      const LEVELS = [[14, 0.6], [10, 0.38], [7, 0.26], [5, 0.19], [3.5, 0.14], [2.5, 0.1]];
       const period = 60 / t.bpm;
+      const step = period / 16;
       const tEnd = t0 + W / pps;
-      let n = Math.ceil((t0 - t.beatOffset) / period);
-      for (; t.beatOffset + n * period < tEnd; n++) {
-        const bt = t.beatOffset + n * period;
-        if (bt < 0) continue;
-        const x = Math.round(cx + (bt - pos) * pps) + 0.5;
-        const bars = deck.bars;
-        const bar = Math.round((bt - bars.downbeat) / period) % bars.beatsPerBar === 0;
-        ctx.fillStyle = `rgba(${INK.ink},${bar ? 0.55 : 0.22})`;
-        const len = (bar ? 9 : 5) * dpr;
-        ctx.fillRect(x, 0, dpr, len);
-        ctx.fillRect(x, H - len, dpr, len);
+      const bars = deck.bars;
+      const minGap = 5 * dpr; // hide a level when its lines would crowd closer than this
+      let n = Math.ceil((t0 - t.beatOffset) / step);
+      for (; t.beatOffset + n * step < tEnd; n++) {
+        const st = t.beatOffset + n * step;
+        if (st < 0) continue;
+        const sub = ((n % 16) + 16) % 16;
+        let level = sub === 0 ? 1 : sub % 8 === 0 ? 2 : sub % 4 === 0 ? 3 : sub % 2 === 0 ? 4 : 5;
+        if (level === 1 && Math.round((st - bars.downbeat) / period) % bars.beatsPerBar === 0) level = 0;
+        if (level > 1 && pps * period * [0, 0, 0.5, 0.25, 0.125, 0.0625][level] < minGap) continue;
+        const [len, alpha] = LEVELS[level];
+        const x = Math.round(cx + (st - pos) * pps) + 0.5;
+        ctx.fillStyle = `rgba(${INK.ink},${alpha})`;
+        ctx.fillRect(x, 0, dpr, len * dpr);
+        ctx.fillRect(x, H - len * dpr, dpr, len * dpr);
       }
     }
 
@@ -1019,16 +1208,17 @@ function drawScrolling(name) {
     marker(deck.cuePoint, `rgb(${INK.ink})`);
 
     // Shade the past.
-    ctx.fillStyle = `rgba(${INK.shade},0.45)`;
+    ctx.fillStyle = INK.light ? `rgba(${INK.ink},0.14)` : `rgba(${INK.shade},0.45)`;
     ctx.fillRect(0, 0, cx, H);
   } else {
     ctx.fillStyle = `rgba(${INK.ink},0.2)`;
     ctx.fillRect(0, mid, W, 1);
   }
 
-  // Playhead
-  ctx.fillStyle = `rgb(${INK.ink})`;
-  ctx.fillRect(cx - dpr, 0, 2 * dpr, H);
+  // Playhead: the deck's colour and thicker while you're dragging the track.
+  const grabbed = canvas.classList.contains('grabbing');
+  ctx.fillStyle = grabbed ? `rgb(${ACCENT[name].join(',')})` : `rgb(${INK.ink})`;
+  ctx.fillRect(cx - (grabbed ? 2 : 1) * dpr, 0, (grabbed ? 4 : 2) * dpr, H);
 }
 
 function buildOverviewImage(name) {
@@ -1065,7 +1255,7 @@ function drawOverview(name) {
   const dpr = window.devicePixelRatio || 1;
   const px = (t) => (t / deck.duration) * W;
   const x = px(deck.position);
-  ctx.fillStyle = `rgba(${INK.shade},0.55)`;
+  ctx.fillStyle = INK.light ? `rgba(${INK.ink},0.18)` : `rgba(${INK.shade},0.55)`;
   ctx.fillRect(0, 0, x, H);
   if (deck.loop) {
     ctx.fillStyle = 'rgba(66,211,146,0.25)';
@@ -1078,7 +1268,9 @@ function drawOverview(name) {
   });
   ctx.fillStyle = `rgb(${INK.ink})`;
   ctx.fillRect(px(deck.cuePoint), 0, dpr, 6 * dpr);
-  ctx.fillRect(x - dpr / 2, 0, 2 * dpr, H);
+  const grabbed = canvas.classList.contains('grabbing');
+  if (grabbed) ctx.fillStyle = `rgb(${ACCENT[name].join(',')})`;
+  ctx.fillRect(x - (grabbed ? 1.5 : 0.5) * dpr, 0, (grabbed ? 3 : 2) * dpr, H);
 }
 
 const meterScratch = new Float32Array(1024);
@@ -1116,10 +1308,6 @@ function frame() {
       // 33⅓ rpm: one turn of the record is 1.8 s of track, so it spins with the tempo.
       d.vinyl.style.transform = `rotate(${((pos / SECONDS_PER_TURN) % 1) * 360}deg)`;
       const bars = deck.bars;
-      const pulse = deck.playing && bars ? (1 - (((pos - bars.downbeat) / (60 / deck.bpm)) % 1 + 1) % 1) ** 3 : 0;
-      // Only the badge and BPM readout get the pulse: a style on the whole deck restyles it every frame.
-      d.badge.style.setProperty('--pulse', pulse.toFixed(2));
-      d.bpmEff.style.setProperty('--pulse', pulse.toFixed(2));
       if (bars) {
         const beats = Math.floor((pos - bars.downbeat) / (60 / deck.bpm) + 1e-6);
         const n = bars.beatsPerBar;
@@ -1134,6 +1322,7 @@ function frame() {
     setMeter($(`.strip[data-deck="${name}"] .meter`), peakDb(deck.analyser, meterScratch), name);
   }
   setMeter($('#masterMeter'), peakDb(mixer.masterAnalyser, meterScratch), 'M');
+  syncVideos();
   requestAnimationFrame(frame);
 }
 
@@ -1161,7 +1350,7 @@ function renderLibrary() {
       const cls = [t.missing ? 'missing' : '', ...loadedOn(t)].join(' ');
       return `<tr draggable="true" data-id="${t.id}" class="${cls}">
         <td>${DECKS.map((n) => `<button class="load-btn ${n.toLowerCase()}" data-load="${n}" title="Load to deck ${n}">${n}</button>`).join('')}</td>
-        <td title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</td>
+        <td title="${escapeHtml(t.title)}"><span class="lib-thumb">${trackThumb(t) ? `<img src="${escapeHtml(trackThumb(t))}" alt="" loading="lazy" referrerpolicy="no-referrer" />` : ''}</span>${escapeHtml(t.title)}</td>
         <td title="${escapeHtml(t.artist)}">${escapeHtml(t.artist)}</td>
         <td class="num">${t.bpm ? Number(t.bpm).toFixed(1) : ''}</td>
         <td class="c-key" title="${escapeHtml(keyName(t.key))}">${escapeHtml(camelot(t.key))} <span class="dim">${escapeHtml(keyName(t.key))}</span></td>
@@ -1171,6 +1360,14 @@ function renderLibrary() {
       </tr>`;
     })
     .join('');
+}
+
+/** A web track's thumbnail: the one saved at download, else YouTube's standard one for the video. */
+function trackThumb(t) {
+  const s = t.source || {};
+  if (s.kind !== 'web') return null;
+  if (s.thumbnail) return s.thumbnail;
+  return /youtube/i.test(s.extractor || '') && /^[\w-]{6,}$/.test(s.id || '') ? `https://i.ytimg.com/vi/${s.id}/mqdefault.jpg` : null;
 }
 
 async function removeTrack(id) {
@@ -1711,7 +1908,7 @@ function setupZoom() {
         if (vel) glide = requestAnimationFrame(step);
         else {
           // Snap while still held, so a playing deck comes back in on the beat with no extra jump.
-          if (snapOn()) deck.scratchTo(deck.pausedPos + deck.beatSnap(deck.pausedPos, mixer.decks[partnerDeck(name)], snapDiv()));
+          if (snapOn()) deck.scratchTo(deck.pausedPos + deck.magneticSnap(deck.pausedPos, mixer.decks[partnerDeck(name)]));
           deck.scratchEnd(wasPlaying);
         }
       };
@@ -1778,16 +1975,24 @@ function setupKeyboard() {
     let handled = true;
     if (e.code === 'Space') {
       if (e.repeat) return e.preventDefault();
-      // Space: pause everything that's playing; press again to resume those decks.
+      // Space: pause everything that's playing. Press again to start the decks it paused,
+      // plus every tempo-locked (synced) deck, all in the same instant so they start in step.
       const playing = DECKS.filter((n) => mixer.decks[n].playing);
       if (playing.length) {
         playing.forEach((n) => mixer.decks[n].pause());
         spacePaused = playing;
       } else {
-        spacePaused.filter((n) => mixer.decks[n].buffer).forEach((n) => {
+        // They're already in step: skip snap-on-play, which would nudge the first one before the rest start.
+        state.startingTogether = true;
+        const start = [...new Set([...spacePaused, ...syncLinked])].filter((n) => mixer.decks[n].buffer && activeDecks().includes(n));
+        start.forEach((n) => {
           mixer.decks[n].play();
           markPlayed(n);
         });
+        state.startingTogether = false;
+        // Line the synced ones up on the beat of the deck that was playing before (or the first).
+        const lead = start.find((n) => spacePaused.includes(n)) || start[0];
+        start.filter((n) => n !== lead && syncLinked.has(n)).forEach((n) => mixer.decks[n].syncTo(mixer.decks[lead]));
         spacePaused = [];
       }
       return e.preventDefault();
@@ -1828,15 +2033,15 @@ function setupKeyboard() {
 // Themes. Canvas colours here must match each theme's --a / --b / --bg in styles.css.
 const THEMES = {
   dark: { A: [255, 138, 61], B: [66, 182, 255], C: [181, 123, 255], D: [163, 230, 53], ink: '237,237,240', shade: '11,11,13', hi: [176, 180, 190] },
-  aloe: { A: [228, 87, 46], B: [28, 127, 196], C: [123, 79, 214], D: [77, 143, 16], ink: '18,48,28', shade: '251,254,251', hi: [96, 130, 108] },
-  mist: { A: [212, 98, 47], B: [47, 109, 176], C: [118, 86, 194], D: [79, 132, 32], ink: '30,37,45', shade: '231,233,236', hi: [104, 112, 122] },
+  aloe: { light: true, A: [228, 87, 46], B: [28, 127, 196], C: [123, 79, 214], D: [77, 143, 16], ink: '18,48,28', shade: '251,254,251', hi: [96, 130, 108] },
+  mist: { light: true, A: [212, 98, 47], B: [47, 109, 176], C: [118, 86, 194], D: [79, 132, 32], ink: '30,37,45', shade: '231,233,236', hi: [104, 112, 122] },
   cherry: {A: [255, 59, 92], B: [255, 163, 192], C: [201, 160, 255], D: [255, 209, 102], ink: '253,238,242', shade: '39,16,26', hi: [214, 168, 182] },
 };
 function setTheme(name) {
   const t = THEMES[name] ? name : 'dark';
   document.body.dataset.theme = t;
   for (const n of DECKS) ACCENT[n] = THEMES[t][n];
-  Object.assign(INK, { ink: THEMES[t].ink, shade: THEMES[t].shade, hi: THEMES[t].hi });
+  Object.assign(INK, { ink: THEMES[t].ink, shade: THEMES[t].shade, hi: THEMES[t].hi, light: !!THEMES[t].light });
   DECKS.forEach((n) => (state.overviewImg[n] = null)); // redraw overviews in the new colours
   $$('.theme-card').forEach((c) => c.setAttribute('aria-checked', String(c.dataset.theme === t)));
   try {
@@ -1845,6 +2050,62 @@ function setTheme(name) {
   } catch {}
 }
 /** 2 or 4 decks. Going back to 2 stops C and D (they'd keep playing out of sight). */
+/**
+ * Scale the whole UI with the window: one page zoom factor, so a small window
+ * shrinks everything to fit (nothing gets cut off) and a big one enlarges it.
+ * The reference layout is about 1340×930 (2 decks) or 1340×1090 (4 decks) at 100%.
+ */
+function fitToWindow() {
+  const z = api.zoom.get();
+  const w = window.innerWidth * z; // window size in unzoomed pixels
+  const h = window.innerHeight * z;
+  // Decks and mixer need ~670 px (830 with 4 decks); the library / search list gets state.browserH on top.
+  const tall = (document.body.classList.contains('decks-4') ? 902 : 764) + state.browserH;
+  const f = Math.max(0.55, Math.min(1.6, w / 1340, h / tall));
+  if (Math.abs(f - z) > 0.01) api.zoom.set(Math.round(f * 100) / 100);
+}
+window.addEventListener('resize', () => requestAnimationFrame(fitToWindow));
+
+// The grip on top of the library / search: drag up for a longer list (the rest scales down to fit).
+state.browserH = 330;
+try {
+  state.browserH = Math.min(560, Math.max(200, Number(localStorage.getItem('browserH')) || 330));
+} catch {}
+document.documentElement.style.setProperty('--browser-h', state.browserH + 'px');
+{
+  const grip = $('.browser-grip');
+  const setH = (h) => {
+    state.browserH = Math.round(Math.min(560, Math.max(200, h)));
+    document.documentElement.style.setProperty('--browser-h', state.browserH + 'px');
+    fitToWindow();
+    try {
+      localStorage.setItem('browserH', String(state.browserH));
+    } catch {}
+  };
+  let from = null;
+  grip.addEventListener('pointerdown', (e) => {
+    grip.setPointerCapture(e.pointerId);
+    from = { y: e.clientY * api.zoom.get(), h: state.browserH }; // window pixels: stable while the zoom changes
+    grip.classList.add('grabbing');
+  });
+  // Moves and release are watched on the window, so a fast drag that leaves the thin grip still counts.
+  window.addEventListener('pointermove', (e) => from && setH(from.h + (from.y - e.clientY * api.zoom.get()) / api.zoom.get()));
+  const end = () => {
+    if (!from) return;
+    from = null;
+    grip.classList.remove('grabbing');
+  };
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  grip.addEventListener('dblclick', () => setH(330));
+  grip.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      setH(state.browserH + (e.key === 'ArrowUp' ? 40 : -40));
+    }
+  });
+}
+
 function setDeckCount(n) {
   const four = n === 4;
   document.body.classList.toggle('decks-4', four);
@@ -1855,14 +2116,50 @@ function setDeckCount(n) {
   });
   if (!four) for (const name of ['C', 'D']) if (mixer.decks[name].playing) mixer.decks[name].pause();
   state.applyXY?.(); // up/down only counts with four decks
+  fitToWindow(); // 4 decks need more height
   renderLibrary();
   try {
     localStorage.setItem('deckCount', four ? '4' : '2');
   } catch {}
 }
 
+/** Font setting: Arial (default), Segoe UI, Playfair Display, Dancing Script, monospace. */
+function setFont(name) {
+  const f = ['arial', 'segoe', 'playfair', 'script', 'mono'].includes(name) ? name : 'arial';
+  if (f === 'arial') delete document.body.dataset.font;
+  else document.body.dataset.font = f;
+  $$('.font-card').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.font === f)));
+  try {
+    localStorage.setItem('font', f);
+  } catch {}
+}
+
 function setupSettings() {
   const dlg = $('#settingsDialog');
+  $$('.font-card').forEach((b) => b.addEventListener('click', () => setFont(b.dataset.font)));
+  // Music videos: Show / Hide (hiding also pauses them).
+  const setMv = (on) => {
+    document.body.classList.toggle('no-mv', !on);
+    $$('#mvSeg button').forEach((b) => {
+      b.classList.toggle('on', (b.dataset.mv === 'on') === on);
+      b.setAttribute('aria-checked', String((b.dataset.mv === 'on') === on));
+    });
+    if (!on) mvScreen.video?.pause();
+    try {
+      localStorage.setItem('musicVideos', on ? 'on' : 'off');
+    } catch {}
+  };
+  $$('#mvSeg button').forEach((b) => b.addEventListener('click', () => setMv(b.dataset.mv === 'on')));
+  try {
+    setMv(localStorage.getItem('musicVideos') !== 'off');
+  } catch {
+    setMv(true);
+  }
+  try {
+    setFont(localStorage.getItem('font') || 'arial');
+  } catch {
+    setFont('arial');
+  }
   $('#settingsBtn').addEventListener('click', () => dlg.showModal());
   $$('.theme-card').forEach((c) => c.addEventListener('click', () => setTheme(c.dataset.theme)));
   $$('#deckCountSeg button').forEach((b) => b.addEventListener('click', () => setDeckCount(Number(b.dataset.decks))));
@@ -1944,6 +2241,7 @@ setupZoom();
 setupKeyboard();
 setupYtdlpChip();
 setupAiChip();
+setupVideoScreen();
 setupSettings();
 setupSfx();
 DECKS.forEach((n) => {

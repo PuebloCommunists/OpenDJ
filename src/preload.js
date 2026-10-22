@@ -1,5 +1,5 @@
 // Bridge between the sandboxed UI and the main process.
-const { contextBridge, ipcRenderer, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('cdj', {
   library: {
@@ -52,6 +52,16 @@ contextBridge.exposeInMainWorld('cdj', {
       return () => ipcRenderer.removeListener('stems:progress', handler);
     },
   },
+  video: {
+    status: (id) => ipcRenderer.invoke('video:status', id),
+    get: (id) => ipcRenderer.invoke('video:get', id),
+    onProgress: (fn) => {
+      const handler = (_e, payload) => fn(payload);
+      ipcRenderer.on('video:progress', handler);
+      return () => ipcRenderer.removeListener('video:progress', handler);
+    },
+  },
   toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen'),
+  zoom: { get: () => webFrame.getZoomFactor(), set: (f) => webFrame.setZoomFactor(f) },
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 });

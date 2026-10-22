@@ -139,7 +139,9 @@ export class Deck {
     this.mid.connect(this.high);
     this.high.connect(this.hp);
     this.hp.connect(this.lp);
-    this.lp.connect(this.fader);
+    this.fxChain = new FxChain(ctx, this);
+    this.lp.connect(this.fxChain.input);
+    this.fxChain.output.connect(this.fader);
     this.fader.connect(this.analyser);
     this.fader.connect(this.xfade);
     this.xfade.connect(mixer.master);
@@ -432,6 +434,7 @@ export class Deck {
   }
 
   startSource(at) {
+    queueMicrotask(() => this.fxChain.syncGate());
     this.stopSource();
     // One source for the mixed track, or four (one per AI stem) started together.
     const plan = this.aiStems
@@ -522,6 +525,7 @@ export class Deck {
       if (this.loop && pos < this.loop.start) this.loop = null;
     }
     this.rate = rate;
+    queueMicrotask(() => this.fxChain.syncGate());
     for (const s of this.sources) s.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
     if (this.keyLock) this.sendFx(); // pitch correction follows the tempo
     if (!silent) this.emit('rate');
@@ -630,17 +634,35 @@ export class Deck {
     let d = target - frac(((pos - t.beatOffset) / per) * div); // in steps of 1/div beat
     if (d > 0.5) d -= 1;
     if (d < -0.5) d += 1;
+    if (pos + (d * per) / div < 0) d += 1; // before 0:00 would get clamped: take the next step instead
     return (d * per) / div;
   }
 
   /**
-   * Tempo only: play at the other deck's BPM (closest octave, e.g. 87 ↔ 174).
+   * Magnetic snap: land on the nearest grid line, with bigger lines pulling from
+   * further away. Within ¼ of a step of a beat it takes the beat; otherwise a ½, ¼
+   * or ⅛ line if it's that close; otherwise the nearest ⅟₁₆.
+   */
+  magneticSnap(pos, other) {
+    if (!this.bpm) return 0;
+    const per = 60 / this.bpm;
+    for (const div of [1, 2, 4, 8]) {
+      const s = this.beatSnap(pos, other, div);
+      if (Math.abs(s) <= per / div / 4) return s;
+    }
+    return this.beatSnap(pos, other, 16);
+  }
+
+  /**
+   * Tempo only: play at the other deck's BPM (closest octave, e.g. 87 ↔ 174), times
+   * this deck's syncMult (½, 1 or 2).
    * Returns the BPM it matched, or 0 when there's no BPM or it's too far to reach.
    */
   matchTempo(other, opts) {
     if (!this.bpm || !other.effectiveBpm) return 0;
     const candidates = [other.effectiveBpm, other.effectiveBpm * 2, other.effectiveBpm / 2];
-    const target = candidates.reduce((a, b) => (Math.abs(b - this.bpm) < Math.abs(a - this.bpm) ? b : a));
+    // Same tempo = the closest octave; then the deck's Sync ratio (½×, 1× or 2×) on top.
+    const target = candidates.reduce((a, b) => (Math.abs(b - this.bpm) < Math.abs(a - this.bpm) ? b : a)) * (this.syncMult || 1);
     const rate = target / this.bpm;
     if (rate < 0.5 || rate > 1.5) return 0;
     this.setRate(rate, opts);
@@ -674,11 +696,15 @@ export class Deck {
       const shift = diff * unitMe;
       this.lastSync = byBar ? 'bar' : 'beat';
       if (Math.abs(shift) > 0.002) {
+        // Near the start of a track a backwards shift would land before 0:00 and get clamped,
+        // leaving the decks out of step. Go forward whole units instead: same alignment, reachable.
+        let to = this.position + shift;
+        while (to < 0) to += unitMe;
         if (this.playing) {
           this.loop = null;
-          this.startSource(Math.max(0, this.position + shift));
+          this.startSource(to);
         } else {
-          this.pausedPos = Math.max(0, this.pausedPos + shift);
+          this.pausedPos = to;
         }
       }
     }
@@ -719,6 +745,144 @@ export class Deck {
 }
 
 const frac = (x) => x - Math.floor(x);
+
+// ---------------------------------------------------------------- deck effects
+
+/**
+ * Per-deck effects after the EQ and filter: gate → flanger → reverb.
+ *  • Gate: beat-synced tremolo. A soft square wave opens the volume on every
+ *    step (¼, ⅛ or ⅟₁₆ note) and dips it in between; amount = how deep.
+ *  • Flanger: a 1–5 ms swept delay with feedback, mixed in; amount = mix + feedback.
+ *  • Reverb: a generated 2.6 s room tail, mixed in; amount = wet level. The tail
+ *    rings out naturally when it's switched off.
+ * Every change glides (setTargetAtTime), so toggling and sliding never click.
+ */
+export class FxChain {
+  constructor(ctx, deck) {
+    this.ctx = ctx;
+    this.deck = deck;
+    this.input = ctx.createGain();
+    this.output = ctx.createGain();
+    this.state = {
+      gate: { on: false, amount: 0.7, div: 2 }, // div: steps per beat (1 = ¼, 2 = ⅛, 4 = ⅟₁₆)
+      flanger: { on: false, amount: 0.5 },
+      reverb: { on: false, amount: 0.4 },
+    };
+
+    // Gate: gain = 1 − depth·(1 − wave)/2, where wave swings −1..1 and is +1 (open) on the step.
+    this.gate = ctx.createGain();
+    this.gateDepth = ctx.createGain(); // scales the oscillator into the gain
+    this.gateDepth.gain.value = 0;
+    this.gateDepth.connect(this.gate.gain);
+    // A soft square from odd sine harmonics: open (+1) for the first half of each step,
+    // starting right on the step, closed for the second half. Tapered so the edges don't click.
+    const n = 8;
+    const real = new Float32Array(n * 2);
+    const imag = new Float32Array(n * 2);
+    for (let k = 1; k < n * 2; k += 2) imag[k] = (4 / (Math.PI * k)) * Math.cos((Math.PI * k) / (4 * n));
+    this.gateWave = ctx.createPeriodicWave(real, imag, { disableNormalization: true });
+    this.gateOsc = null;
+
+    // Flanger: dry + (delay ← LFO, with feedback) · wet.
+    this.flDry = ctx.createGain();
+    this.flWet = ctx.createGain();
+    this.flWet.gain.value = 0;
+    this.flDelay = ctx.createDelay(0.02);
+    this.flDelay.delayTime.value = 0.003;
+    this.flFeedback = ctx.createGain();
+    this.flFeedback.gain.value = 0;
+    this.flLfo = ctx.createOscillator();
+    this.flLfo.frequency.value = 0.25;
+    const sweep = ctx.createGain();
+    sweep.gain.value = 0.002; // ±2 ms around 3 ms
+    this.flLfo.connect(sweep).connect(this.flDelay.delayTime);
+    this.flLfo.start();
+    this.flMix = ctx.createGain();
+
+    // Reverb: dry + convolver · wet.
+    this.rvDry = ctx.createGain();
+    this.rvWet = ctx.createGain();
+    this.rvWet.gain.value = 0;
+    this.rv = ctx.createConvolver();
+    this.rv.buffer = roomImpulse(ctx, 2.6);
+
+    this.input.connect(this.gate);
+    this.gate.connect(this.flDry).connect(this.flMix);
+    this.gate.connect(this.flDelay);
+    this.flDelay.connect(this.flFeedback).connect(this.flDelay);
+    this.flDelay.connect(this.flWet).connect(this.flMix);
+    this.flMix.connect(this.rvDry).connect(this.output);
+    this.flMix.connect(this.rv).connect(this.rvWet).connect(this.output);
+  }
+
+  /** Turn an effect on or off and/or set its amount (0..1) or the gate's rate. */
+  set(name, patch) {
+    Object.assign(this.state[name], patch);
+    this.apply();
+  }
+
+  apply() {
+    const t = this.ctx.currentTime;
+    const glide = (param, v) => param.setTargetAtTime(v, t, 0.03);
+    const { gate, flanger, reverb } = this.state;
+    const depth = gate.on ? gate.amount : 0;
+    glide(this.gate.gain, 1 - depth / 2);
+    glide(this.gateDepth.gain, depth / 2);
+    if (gate.on && !this.gateOsc) this.syncGate();
+    const fl = flanger.on ? flanger.amount : 0;
+    glide(this.flWet.gain, fl * 0.8);
+    glide(this.flDry.gain, 1 - fl * 0.25); // keeps the overall level even as the mix rises
+    glide(this.flFeedback.gain, fl * 0.7);
+    const rv = reverb.on ? reverb.amount : 0;
+    glide(this.rvWet.gain, rv * 0.9);
+    glide(this.rvDry.gain, 1 - rv * 0.3);
+  }
+
+  /**
+   * (Re)start the gate's oscillator so it opens exactly on the next step of the
+   * beat grid, at the current tempo. Called on play, seek and tempo changes.
+   */
+  syncGate() {
+    const d = this.deck;
+    const g = this.state.gate;
+    if (!g.on || !d.playing || !d.bpm || d.track?.beatOffset == null) {
+      if (!g.on && this.gateOsc) {
+        this.gateOsc.stop(this.ctx.currentTime + 0.1); // after the depth has glided to 0
+        this.gateOsc = null;
+      }
+      return;
+    }
+    const step = 60 / d.bpm / g.div; // track seconds per gate step
+    const pos = d.position;
+    const next = d.track.beatOffset + Math.ceil((pos - d.track.beatOffset) / step) * step;
+    // The deck-fx node ahead of the gate delays the audio by 2048 samples: open on the step as heard.
+    const fxDelay = d.fx ? 2048 / this.ctx.sampleRate : 0;
+    const when = this.ctx.currentTime + (next - pos) / d.rate + fxDelay;
+    const osc = this.ctx.createOscillator();
+    osc.setPeriodicWave(this.gateWave);
+    osc.frequency.value = d.rate / step; // steps per real second
+    osc.connect(this.gateDepth);
+    osc.start(when);
+    this.gateOsc?.stop(when); // hand over exactly on the step
+    this.gateOsc = osc;
+  }
+}
+
+/** A decaying stereo noise burst: a simple, smooth room for the reverb. */
+function roomImpulse(ctx, seconds) {
+  const len = Math.floor(ctx.sampleRate * seconds);
+  const b = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = b.getChannelData(ch);
+    let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / len;
+      lp += 0.35 * (Math.random() * 2 - 1 - lp); // darker, less hissy
+      data[i] = lp * Math.pow(1 - t, 3.2) * (i < 64 ? i / 64 : 1);
+    }
+  }
+  return b;
+}
 
 /** Peak level in dBFS from an analyser. */
 export function peakDb(analyser, scratch) {

@@ -450,6 +450,7 @@ async function downloadTrack({ url, jobId, meta = null }) {
         url: info.webpage_url || cleanUrl,
         uploader: info.channel || info.uploader || '',
         uploaderUrl: info.channel_url || info.uploader_url || '',
+        thumbnail: info.thumbnail || null,
         // Recorded as reported, not checked (no-gate build).
         license: info.license || null,
         licenseCheckedBy: 'unchecked',
@@ -699,6 +700,40 @@ function separateStems(id, left, right) {
   return promise;
 }
 
+// ---------------------------------------------------------------- music videos (optional)
+// For tracks downloaded from the web, a small muted video copy (≤ 480p, no audio)
+// can be fetched once and kept in <userData>/videos/<trackId>.<ext>. The decks
+// show it beside the readouts, following the music.
+
+const videoDir = () => path.join(paths.root, 'videos');
+const safeId = (id) => String(id).replace(/[^a-zA-Z0-9_-]/g, '');
+
+function cachedVideo(id) {
+  try {
+    const name = fs.readdirSync(videoDir()).find((n) => n.startsWith(safeId(id) + '.') && !/\.(part|ytdl|tmp)$/.test(n));
+    return name ? path.join(videoDir(), name) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchVideo(id) {
+  const t = findTrack(id);
+  if (t?.source?.kind !== 'web' || !t.source.url) throw new Error('Only downloaded web tracks have a video.');
+  let file = cachedVideo(id);
+  if (!file) {
+    fs.mkdirSync(videoDir(), { recursive: true });
+    const send = (percent) => mainWindow?.webContents.send('video:progress', { trackId: id, percent });
+    await runYtdlp(
+      ['--no-playlist', '-f', 'bv*[height<=480][ext=mp4]/bv*[height<=480]/bv*', '-o', path.join(videoDir(), `${safeId(id)}.%(ext)s`), '--no-mtime', '--newline', '--progress', validateUrl(t.source.url)],
+      { onLine: (line) => { const m = line.match(/\[download\]\s+([\d.]+)%/); if (m) send(parseFloat(m[1])); } },
+    );
+    file = cachedVideo(id);
+    if (!file) throw new Error('The video download finished but the file could not be found.');
+  }
+  return fsp.readFile(file);
+}
+
 // ---------------------------------------------------------------- IPC
 
 function registerIpc() {
@@ -744,9 +779,17 @@ function registerIpc() {
     }
     // Cached AI stems belong to the track; they go with it.
     if (!stemJobs.has(id)) await fsp.rm(stemDir(id), { recursive: true, force: true }).catch(() => {});
+    const video = cachedVideo(id); // so does its music video
+    if (video) await fsp.unlink(video).catch(() => {});
     saveLibrary();
     return true;
   });
+
+  ipcMain.handle('video:status', (_e, id) => {
+    const t = findTrack(id);
+    return { available: t?.source?.kind === 'web' && !!t.source.url, cached: !!cachedVideo(id) };
+  });
+  ipcMain.handle('video:get', (_e, id) => fetchVideo(id));
 
   ipcMain.handle('library:readAudio', async (_e, id) => {
     const t = findTrack(id);
@@ -814,7 +857,10 @@ function registerIpc() {
 // ---------------------------------------------------------------- window
 
 function createWindow() {
+  // --background: open behind the current window without taking focus (used for restarts).
+  const background = process.argv.includes('--background');
   mainWindow = new BrowserWindow({
+    show: !background,
     width: 1360,
     height: 860,
     minWidth: 1040,
@@ -830,6 +876,7 @@ function createWindow() {
     },
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  if (background) mainWindow.once('ready-to-show', () => mainWindow.showInactive());
 
   // Keep links out of the app window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

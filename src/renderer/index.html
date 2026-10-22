@@ -25,13 +25,7 @@
           <button data-curve="smooth" class="on" role="radio" aria-checked="true">Blend</button>
           <button data-curve="cut" role="radio" aria-checked="false">Cut</button>
         </div>
-        <div class="seg snap-seg" id="snapSeg" role="radiogroup" aria-label="Snap to beat" title="Snap: a dragged waveform, record or overview (and pressing play) lands on the nearest step, lined up with the other playing deck">
-          <span class="seg-label">Snap</span>
-          <button data-snap="0" role="radio" aria-checked="false">Off</button>
-          <button data-snap="1" class="on" role="radio" aria-checked="true">1</button>
-          <button data-snap="2" role="radio" aria-checked="false">½</button>
-          <button data-snap="4" role="radio" aria-checked="false">¼</button>
-        </div>
+        <button class="chip snap on" id="snapBtn" aria-pressed="true" title="Snap: a dragged waveform, record or overview (and pressing play) lands on the nearest grid line, lined up with the other playing deck. Beats pull hardest, then ½, ¼, ⅛ and ⅟₁₆.">Snap</button>
       </div>
     </div>
     <div class="top-right">
@@ -59,6 +53,11 @@
     <div class="wave-row extra" data-deck="D">
       <span class="wave-tag">D</span>
       <canvas id="waveD" class="scroll-wave"></canvas>
+    </div>
+    <div class="mv" id="mvCenter" hidden>
+      <video class="mv-video" muted playsinline preload="auto" aria-label="Music video of the loudest deck"></video>
+      <button class="mv-get" title="Download a small, muted copy of this track's video (once)">▶ Music video</button>
+      <span class="mv-tag"></span>
     </div>
     <div class="zoom">
       <button id="zoomOut" title="Zoom out">−</button>
@@ -142,6 +141,7 @@
   </main>
 
   <section class="browser">
+    <div class="browser-grip" role="separator" aria-orientation="horizontal" aria-label="Drag to resize the library and search" title="Drag up for a bigger library / search list (double-click to reset)" tabindex="0"></div>
     <nav class="tabs" role="tablist">
       <button class="tab on" data-tab="library" role="tab" aria-selected="true">Library <span id="libCount" class="count">0</span></button>
       <button class="tab" data-tab="cc" role="tab" aria-selected="false">Search</button>
@@ -255,12 +255,26 @@
       </div>
     </section>
     <section class="set-section">
+      <h3>Font</h3>
+      <div class="font-cards" role="radiogroup" aria-label="Font">
+        <button class="font-card" data-font="arial" role="radio" aria-checked="true" style="font-family: Arial, sans-serif">Arial</button>
+        <button class="font-card" data-font="segoe" role="radio" aria-checked="false" style="font-family: 'Segoe UI', sans-serif">Segoe UI</button>
+        <button class="font-card" data-font="playfair" role="radio" aria-checked="false" style="font-family: 'Playfair Display', serif">Playfair Display</button>
+        <button class="font-card" data-font="script" role="radio" aria-checked="false" style="font-family: 'Dancing Script', cursive; font-size: 17px">Dancing Script</button>
+        <button class="font-card" data-font="mono" role="radio" aria-checked="false" style="font-family: 'Cascadia Mono', Consolas, monospace">Monospace</button>
+      </div>
+    </section>
+    <section class="set-section">
       <h3>Audio &amp; display</h3>
       <div class="set-grid">
         <label for="setOutput">Output device</label>
         <select id="setOutput" class="field"><option value="">System default</option></select>
         <label for="setVolume">Master volume</label>
         <input id="setVolume" class="hslider" type="range" min="0" max="1" step="0.01" value="0.85" />
+        <span>Music videos</span>
+        <div class="seg" id="mvSeg" role="radiogroup" aria-label="Music videos">
+          <button data-mv="on" class="on" role="radio" aria-checked="true">Show</button><button data-mv="off" role="radio" aria-checked="false">Hide</button>
+        </div>
         <span>Fullscreen</span>
         <button id="setFullscreen" class="btn" type="button">Enter fullscreen (F11)</button>
       </div>
@@ -335,6 +349,7 @@
           <button class="pad cue" title="Cue: set or jump back to the cue point">Cue</button>
           <button class="pad play" title="Play / pause">▶</button>
           <button class="pad sync" title="Sync: match tempo and beat to the other deck and keep the tempos locked together. Press again to unlock.">Sync</button>
+          <button class="mini sync-mult" aria-label="Sync ratio" title="Sync ratio: sync at ½×, 1× or 2× the other deck's tempo (click to change)">1×</button>
           <div class="nudge">
             <button class="mini nudge-back" title="Nudge back (hold)">◀◀</button>
             <button class="mini nudge-fwd" title="Nudge forward (hold)">▶▶</button>
@@ -373,6 +388,18 @@
           <button class="stem" data-stem="vocals" title="Vocals on/off (Shift-click: solo, right-click: all on)">Vocals</button>
           <button class="stem" data-stem="drums" title="Drums on/off (Shift-click: solo, right-click: all on)">Drums</button>
           <button class="stem" data-stem="instruments" title="Instruments on/off (Shift-click: solo, right-click: all on)">Instruments</button>
+        </div>
+        <div class="row fxrow" role="group" aria-label="Effects">
+          <span class="label">FX</span>
+          <div class="fx" data-fx="gate" role="slider" tabindex="0" aria-label="Gate intensity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="70" title="Gate: a beat-synced tremolo. Tap to switch on or off, drag across to set the intensity.">
+            <span class="fx-fill"></span><span class="fx-name">Gate</span><button class="fx-rate" aria-label="Gate rate" title="Gate rate: click to change">⅛</button><span class="fx-val">70%</span>
+          </div>
+          <div class="fx" data-fx="flanger" role="slider" tabindex="0" aria-label="Flanger intensity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" title="Flanger: a sweeping jet sound. Tap to switch on or off, drag across to set the intensity.">
+            <span class="fx-fill"></span><span class="fx-name">Flanger</span><span class="fx-val">50%</span>
+          </div>
+          <div class="fx" data-fx="reverb" role="slider" tabindex="0" aria-label="Reverb intensity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="40" title="Reverb: a room tail that rings out when switched off. Tap to switch on or off, drag across to set the intensity.">
+            <span class="fx-fill"></span><span class="fx-name">Reverb</span><span class="fx-val">40%</span>
+          </div>
         </div>
       </div>
     </div>
