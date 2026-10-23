@@ -628,7 +628,7 @@ export class Deck {
     const per = 60 / this.bpm;
     let target = 0; // phase (0..1) the beat should land on
     if (other && other !== this && other.playing && other.bpm && other.track?.beatOffset != null) {
-      const k = [1, 2, 0.5].find((m) => Math.abs((this.effectiveBpm * m) / other.effectiveBpm - 1) < 0.02);
+      const k = [1, 2, 0.5].find((m) => Math.abs((this.effectiveBpm * m) / other.effectiveBpm - 1) < 0.1); // close tempos: line up with where the other deck is now
       if (k) target = frac((((other.position - other.track.beatOffset) / (60 / other.bpm)) / k) * div);
     }
     let d = target - frac(((pos - t.beatOffset) / per) * div); // in steps of 1/div beat
@@ -636,21 +636,6 @@ export class Deck {
     if (d < -0.5) d += 1;
     if (pos + (d * per) / div < 0) d += 1; // before 0:00 would get clamped: take the next step instead
     return (d * per) / div;
-  }
-
-  /**
-   * Magnetic snap: land on the nearest grid line, with bigger lines pulling from
-   * further away. Within ¼ of a step of a beat it takes the beat; otherwise a ½, ¼
-   * or ⅛ line if it's that close; otherwise the nearest ⅟₁₆.
-   */
-  magneticSnap(pos, other) {
-    if (!this.bpm) return 0;
-    const per = 60 / this.bpm;
-    for (const div of [1, 2, 4, 8]) {
-      const s = this.beatSnap(pos, other, div);
-      if (Math.abs(s) <= per / div / 4) return s;
-    }
-    return this.beatSnap(pos, other, 16);
   }
 
   /**

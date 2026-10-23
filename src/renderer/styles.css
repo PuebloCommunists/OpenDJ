@@ -915,11 +915,6 @@ body.decks-4 .console { grid-template-columns: 1fr 180px 1fr; }
    without a video the waveforms take the full width. */
 .waves { --mvw: 338px; grid-template-columns: 1fr; }
 body.decks-4 .waves { --mvw: 296px; }
-.waves:has(#mvCenter:not([hidden])) { grid-template-columns: 1fr var(--mvw); }
-body.no-mv .waves { grid-template-columns: 1fr; }
-.waves .wave-row { grid-column: 1; }
-.waves .mv { grid-column: 2; grid-row: 1 / span 4; width: 100%; height: 100%; aspect-ratio: auto; }
-.waves:has(#mvCenter:not([hidden])) .zoom { right: calc(var(--mvw) + 22px); }
 .chip.snap { color: var(--muted); }
 .chip.snap.on { background: var(--cc); color: var(--bg); }
 /* Taller waveform rows give the video room: it's as tall as both rows, at 16:9. */
@@ -927,3 +922,33 @@ body.no-mv .waves { grid-template-columns: 1fr; }
 body.decks-4 .wave-row { height: 46px; }
 .waves { --mvw: 425px; }
 body.decks-4 .waves { --mvw: 343px; }
+
+/* ------------------------------------------------------------------ video in the middle
+   2 decks: the decks form a U around a notch at the top centre. Their top parts
+   (title, record, readouts, overview) stop short of the middle; the video sits in the
+   gap with the crossfader under it; the lower rows run full width underneath.
+   Channel strips move to the outer edges (next to the tempo sliders) to make room.
+   4 decks: the four inner corners give way to a square in the middle (video over the XY pad).
+   The middle is cut out of the decks in the page colour; app.js (fitNotch) moves each
+   deck row that it overlaps out of its way. */
+.deck .tempo { order: 0; }
+.deck .strip, body.decks-4 .deck .strip { order: 1; padding: 0 10px 0 0; border-left: 0; border-right: 1px solid var(--line); }
+.deck .deck-main { order: 2; }
+.deck[data-deck='B'] .strip, .deck[data-deck='D'] .strip { padding: 0 0 0 10px; border-right: 0; border-left: 1px solid var(--line); }
+
+.console, body.decks-4 .console { grid-template-columns: 1fr 1fr; grid-template-areas: 'a b'; position: relative; --mw: 118px; }
+body.decks-4 .console { grid-template-areas: 'a b' 'c d'; --mw: 240px; }
+.console:has(#mvCenter:not([hidden])) { --mw: 396px; }
+body.decks-4 .console:has(#mvCenter:not([hidden])) { --mw: 360px; }
+.mixer, body.decks-4 .mixer {
+  position: absolute; top: 0; left: 50%; width: var(--mw); transform: translateX(-50%); z-index: 2;
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 10px;
+  padding: 10px; background: var(--panel); border-radius: 14px; box-shadow: inset 0 0 0 1px var(--line) !important;
+}
+body.decks-4 .mixer { top: 50%; transform: translate(-50%, -50%); }
+.mixer::before, body.decks-4 .mixer::before { display: none; }
+.mixer .mv, body.decks-4 .mixer .mv { width: 100%; height: auto; aspect-ratio: 16 / 9; box-shadow: none; }
+.mixer .xfader { justify-content: center; }
+/* 4 decks: with a video the XY pad fills the rest of the square; without, it's the square. */
+body.decks-4 .mixer .xypad { max-width: none; width: 100%; aspect-ratio: 1; }
+body.decks-4 .console:has(#mvCenter:not([hidden])) .mixer .xypad { aspect-ratio: auto; height: calc(var(--mw) - 20px - (var(--mw) - 20px) * 9 / 16 - 10px); }

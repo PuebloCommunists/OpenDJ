@@ -54,11 +54,6 @@
       <span class="wave-tag">D</span>
       <canvas id="waveD" class="scroll-wave"></canvas>
     </div>
-    <div class="mv" id="mvCenter" hidden>
-      <video class="mv-video" muted playsinline preload="auto" aria-label="Music video of the loudest deck"></video>
-      <button class="mv-get" title="Download a small, muted copy of this track's video (once)">▶ Music video</button>
-      <span class="mv-tag"></span>
-    </div>
     <div class="zoom">
       <button id="zoomOut" title="Zoom out">−</button>
       <button id="zoomIn" title="Zoom in">+</button>
@@ -122,6 +117,11 @@
             <div class="meter meter-v"><div class="meter-fill"></div><div class="meter-peak"></div></div>
           </div>
         </div>
+      </div>
+      <div class="mv" id="mvCenter" hidden>
+        <video class="mv-video" muted playsinline preload="auto" aria-label="Music video of the loudest deck"></video>
+        <button class="mv-get" title="Download a small, muted copy of this track's video (once)">▶ Music video</button>
+        <span class="mv-tag"></span>
       </div>
       <div class="xypad extra" id="xyPad" role="slider" aria-label="4-deck mix: drag toward a corner" tabindex="0">
         <span class="xy-tag" data-deck="A">A</span><span class="xy-tag" data-deck="B">B</span>
@@ -282,9 +282,9 @@
     <section class="set-section">
       <h3>Waveform</h3>
       <div class="set-grid">
-        <span>Beats shown</span>
-        <div class="seg" id="beatsSeg" role="radiogroup" aria-label="Beats shown across the waveform">
-          <button data-beats="4" role="radio">4</button><button data-beats="8" role="radio">8</button><button data-beats="16" class="on" role="radio">16</button><button data-beats="32" role="radio">32</button><button data-beats="64" role="radio">64</button>
+        <span>Seconds shown</span>
+        <div class="seg" id="beatsSeg" role="radiogroup" aria-label="Seconds shown across the waveforms">
+          <button data-span="4" role="radio">4</button><button data-span="8" role="radio">8</button><button data-span="16" class="on" role="radio">16</button><button data-span="24" role="radio">24</button><button data-span="32" role="radio">32</button>
         </div>
       </div>
     </section>

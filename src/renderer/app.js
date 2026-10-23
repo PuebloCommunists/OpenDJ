@@ -38,7 +38,7 @@ const state = {
   waves: { A: null, B: null, C: null, D: null },
   overviewImg: { A: null, B: null, C: null, D: null },
   zoom: 110, // waveform pixels per second (tracks without a BPM)
-  beats: 16, // beats shown across the scrolling waveforms (tracks with a BPM)
+  span: 16, // seconds shown across the scrolling waveforms (the same for every deck)
   played: new Map(), // trackId -> track (web tracks played this session, for credits)
   ccResults: [],
   jobs: new Map(), // jobId -> { el, url }
@@ -632,10 +632,18 @@ function setupVideoScreen() {
 // Snap to beat (top-bar toggle): when you let go of a dragged waveform, record or
 // overview, the deck lands on the nearest beat lined up with the deck it plays against.
 const snapOn = () => $('#snapBtn').classList.contains('on');
+// Snap lands on the nearest line of the finest grid drawn on the waveform at this zoom
+// (lines closer than 5 px aren't drawn), so every line you can see is a place to land.
+function snapDiv(name) {
+  const deck = mixer.decks[name];
+  if (!deck.bpm) return 1;
+  const px = 60 / deck.bpm / secPerCssPx(deck, $(`#wave${name}`).clientWidth); // px per beat
+  return [16, 8, 4, 2].find((d) => px / d >= 5) || 1;
+}
 function snapDeck(name) {
   const deck = mixer.decks[name];
   if (!snapOn() || !deck.buffer || state.startingTogether) return;
-  const shift = deck.magneticSnap(deck.position, mixer.decks[partnerDeck(name)]);
+  const shift = deck.beatSnap(deck.position, mixer.decks[partnerDeck(name)], snapDiv(name));
   if (Math.abs(shift) < 0.002) return;
   if (deck.playing) deck.fadeSwap(() => deck.seek(deck.position + shift));
   else deck.seek(deck.pausedPos + shift);
@@ -655,6 +663,19 @@ function followTempo(name) {
   following = false;
 }
 
+// Two BPMs 4:3 apart (112 vs 150) with no ½ / 1 / 2 match: one was read at ¾ of its real
+// tempo (a triplet feel fools the detector). Its grid still hits every third real beat, so
+// scaling the slower one by 4⁄3 fills in the beats; then the sync can match them 1:1.
+function fixThreeFour(a, b) {
+  const near = (x, y, tol) => [1, 2, 0.5].some((m) => Math.abs((x * m) / y - 1) < tol);
+  if (near(a.bpm, b.bpm, 0.08)) return;
+  const [slow, fast] = a.bpm < b.bpm ? [a, b] : [b, a];
+  if (!near((slow.bpm * 4) / 3, fast.bpm, 0.02)) return;
+  const was = slow.bpm;
+  scaleBpm(slow.name, 4 / 3);
+  toast(`Deck ${slow.name} was read at ¾ of its tempo: ${was} → ${slow.bpm} BPM.`);
+}
+
 function doSync(name) {
   if (syncLinked.has(name)) {
     // Pressed again: unlock this deck (a lone remaining deck isn't linked to anything).
@@ -666,6 +687,7 @@ function doSync(name) {
   const other = mixer.decks[partnerDeck(name)];
   if (!deck.track || !other.track) return toast('Load a track on another deck to sync to.');
   if (!deck.bpm || !other.bpm) return toast('Both tracks need a BPM — try TAP to set one.');
+  fixThreeFour(deck, other);
   if (!deck.syncTo(other)) return toast('Tempos are too far apart to sync.', 'error');
   if (deck.lastSync === 'beat' && deck.bars && other.bars && deck.bars.beatsPerBar !== other.bars.beatsPerBar)
     toast(`Synced beats only — deck ${name} is in ${deck.bars.beatsPerBar}/4, deck ${other.name} in ${other.bars.beatsPerBar}/4.`);
@@ -1829,34 +1851,33 @@ function setupTabs() {
  * the same number of its own beats, so synced decks line up beat for beat.
  */
 function secPerCssPx(deck, cssWidth) {
-  return deck.bpm ? (state.beats * (60 / deck.bpm)) / Math.max(1, cssWidth) : deck.rate / state.zoom;
+  return (state.span * deck.rate) / Math.max(1, cssWidth); // real time is the same for every deck: same scroll speed
 }
 
 function setupZoom() {
-  // Zoom eases toward its target (beats shown) instead of jumping.
-  let target = state.beats;
+  // Zoom = seconds shown across the waveforms (same for every deck); eases instead of jumping.
+  let target = state.span;
   const ease = () => {
-    state.beats += (target - state.beats) * 0.25;
-    state.zoom = 110 * (16 / state.beats); // tracks without a BPM zoom along
-    if (Math.abs(target - state.beats) > 0.02) requestAnimationFrame(ease);
-    else state.beats = target;
+    state.span += (target - state.span) * 0.25;
+    if (Math.abs(target - state.span) > 0.02) requestAnimationFrame(ease);
+    else state.span = target;
   };
-  const setBeats = (b) => {
-    const settled = Math.abs(target - state.beats) <= 0.02;
-    target = Math.max(2, Math.min(128, b));
-    $$('#beatsSeg button').forEach((x) => x.classList.toggle('on', Number(x.dataset.beats) === target));
+  const setSpan = (s) => {
+    const settled = Math.abs(target - state.span) <= 0.02;
+    target = Math.max(2, Math.min(64, s));
+    $$('#beatsSeg button').forEach((x) => x.classList.toggle('on', Number(x.dataset.span) === target));
     try {
-      localStorage.setItem('beatsShown', String(target));
+      localStorage.setItem('secondsShown', String(target));
     } catch {}
     if (settled) requestAnimationFrame(ease);
   };
-  const zoomBy = (f) => setBeats(Math.round(target / f));
-  $$('#beatsSeg button').forEach((b) => b.addEventListener('click', () => setBeats(Number(b.dataset.beats))));
+  const zoomBy = (f) => setSpan(Math.round(target / f));
+  $$('#beatsSeg button').forEach((b) => b.addEventListener('click', () => setSpan(Number(b.dataset.span))));
   try {
-    const saved = Number(localStorage.getItem('beatsShown'));
-    if (saved) setBeats(saved);
+    const saved = Number(localStorage.getItem('secondsShown'));
+    if (saved) setSpan(saved);
   } catch {}
-  $('#zoomIn').addEventListener('click', () => zoomBy(2)); // half as many beats
+  $('#zoomIn').addEventListener('click', () => zoomBy(2)); // half the time across
   $('#zoomOut').addEventListener('click', () => zoomBy(1 / 2));
 
   // Grab a waveform or a record to scratch: playback stops under your hand, the
@@ -1908,7 +1929,7 @@ function setupZoom() {
         if (vel) glide = requestAnimationFrame(step);
         else {
           // Snap while still held, so a playing deck comes back in on the beat with no extra jump.
-          if (snapOn()) deck.scratchTo(deck.pausedPos + deck.magneticSnap(deck.pausedPos, mixer.decks[partnerDeck(name)]));
+          if (snapOn()) deck.scratchTo(deck.pausedPos + deck.beatSnap(deck.pausedPos, mixer.decks[partnerDeck(name)], snapDiv(name)));
           deck.scratchEnd(wasPlaying);
         }
       };
@@ -2055,6 +2076,44 @@ function setTheme(name) {
  * shrinks everything to fit (nothing gets cut off) and a big one enlarges it.
  * The reference layout is about 1340×930 (2 decks) or 1340×1090 (4 decks) at 100%.
  */
+// The middle (video, crossfader / XY pad) sits over the decks' inner edges: every deck
+// row it overlaps gives way on that side, so nothing hides under it.
+const roundRect = (x1, y1, x2, y2, r) =>
+  `M${x1 + r} ${y1}H${x2 - r}A${r} ${r} 0 0 1 ${x2} ${y1 + r}V${y2 - r}A${r} ${r} 0 0 1 ${x2 - r} ${y2}H${x1 + r}A${r} ${r} 0 0 1 ${x1} ${y2 - r}V${y1 + r}A${r} ${r} 0 0 1 ${x1 + r} ${y1}Z`;
+function fitNotch() {
+  const g = 8; // gap between the middle panel and the decks
+  const b = $('.mixer').getBoundingClientRect();
+  const m = { left: b.left - g, right: b.right + g, top: b.top - g, bottom: b.bottom + g };
+  for (const deck of $$('.console > .deck')) {
+    const left = deck.dataset.deck === 'A' || deck.dataset.deck === 'C';
+    // Cut the middle panel's footprint (plus the gap) out of the deck itself.
+    const d = deck.getBoundingClientRect();
+    const x1 = Math.max(-30, m.left - d.left), x2 = Math.min(d.width + 30, m.right - d.left);
+    const y1 = Math.max(-30, m.top - d.top), y2 = Math.min(d.height + 30, m.bottom - d.top);
+    deck.style.clipPath = x2 > x1 && y2 > y1 && deck.offsetParent
+      ? `path(evenodd, 'M-40 -40H${d.width + 40}V${d.height + 40}H-40Z ${roundRect(x1, y1, x2, y2, 22)}')`
+      : '';
+    for (const row of [deck.querySelector('.deck-head'), ...deck.querySelector('.deck-main').children]) {
+      row.style.marginLeft = row.style.marginRight = row.style.maxWidth = '';
+      if (deck.offsetParent === null) continue;
+      const r = row.getBoundingClientRect();
+      const give = r.bottom > m.top && r.top < m.bottom ? (left ? r.right - m.left : m.right - r.left) : 0;
+      if (give <= 0) continue;
+      row.style[left ? 'marginRight' : 'marginLeft'] = give + 'px';
+      row.style.maxWidth = `calc(100% - ${give}px)`; // the overview canvas is width: 100%
+    }
+  }
+}
+{
+  let queued = false;
+  const ro = new ResizeObserver(() => {
+    if (!queued) requestAnimationFrame(() => ((queued = false), fitNotch()));
+    queued = true;
+  });
+  ro.observe($('.console'));
+  ro.observe($('.mixer'));
+}
+
 function fitToWindow() {
   const z = api.zoom.get();
   const w = window.innerWidth * z; // window size in unzoomed pixels
