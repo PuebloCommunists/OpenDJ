@@ -11,6 +11,13 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.6-beta
+
+- **Music video in the middle:** 2 decks put it in a rounded cutout at the top centre above the crossfader; 4 decks put it in a large square where the four decks' inner corners meet, over the XY pad.
+- **Waveforms** scroll at the same speed on every deck (16 seconds shown by default; **Settings → Seconds shown**).
+- **Snap** lands on the nearest grid line drawn on the waveform (down to ⅛ or ⅟₁₆ beat when zoomed in), lined up with the other deck.
+- **Sync** fixes tracks read at ¾ of their tempo (like 112 vs 150): the slower BPM is corrected by 4⁄3 and saved, then the decks sync at normal speed.
+
 ## What's new in 0.3.4-beta
 
 - **Snap to beat:** Off / 1 / 1/2 / 1/4. Dragging the waveform, record or overview, and pressing play, land on the nearest step lined up with the other deck.
