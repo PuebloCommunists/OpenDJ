@@ -11,6 +11,10 @@ A two-deck DJ app for your own music and Creative Commons tracks, with yt-dlp bu
 > order), with a details strip showing exactly what was searched and an **Expand** button for more room. The
 > search problems are written up in `docs/search-issues/`.
 
+## What's new in 0.3.7-beta
+
+- **Fixed: crash when a new track starts AI stems** (for example when you drag a song in). The AI stem runtime now ships next to the app instead of inside it, so Windows no longer loads its own older onnxruntime.dll by mistake.
+
 ## What's new in 0.3.6-beta
 
 - **Music video in the middle:** 2 decks put it in a rounded cutout at the top centre above the crossfader; 4 decks put it in a large square where the four decks' inner corners meet, over the XY pad.
