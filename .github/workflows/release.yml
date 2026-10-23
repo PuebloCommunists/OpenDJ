@@ -43,14 +43,17 @@ jobs:
       - name: Package
         run: |
           node scripts/fetch-ytdlp.mjs win32 ${{ matrix.arch }}
+          node scripts/vendor-ort.mjs win32 ${{ matrix.arch }}
           npx electron-packager . "$APP_NAME" --platform=win32 --arch=${{ matrix.arch }} --out=dist --overwrite \
             --icon=assets/icon.ico --extra-resource=vendor/win32-${{ matrix.arch }}/bin \
+            --extra-resource=vendor/win32-${{ matrix.arch }}/ort \
             --ignore="$PACKAGER_IGNORE" --prune=false
       - name: Check bundle
         run: |
           dir="dist/$APP_NAME-win32-${{ matrix.arch }}"
           ls -la "$dir" "$dir/resources" "$dir/resources/bin"
           test -f "$dir/$APP_NAME.exe"
+          test -f "$dir/resources/ort/onnxruntime-node/bin/napi-v6/win32/${{ matrix.arch }}/onnxruntime.dll"
           if [ "${{ matrix.arch }}" = x64 ]; then "$dir/resources/bin/yt-dlp.exe" --version; else test -f "$dir/resources/bin/yt-dlp_arm64.exe"; fi
       - name: Zip
         run: |
