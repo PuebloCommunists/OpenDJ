@@ -1,7 +1,7 @@
 // Commons DJ — UI
 import { Mixer, peakDb, STEMS, AI_STEM_NAMES, XF_SIDE } from './engine.js';
 import { SOUNDS } from './sfx.js';
-import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey } from './analysis.js';
+import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey, kickEnvelope, GRID_VERSION } from './analysis.js';
 
 const api = window.cdj;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -645,8 +645,7 @@ function snapDeck(name) {
   if (!snapOn() || !deck.buffer || state.startingTogether) return;
   const shift = deck.beatSnap(deck.position, mixer.decks[partnerDeck(name)], snapDiv(name));
   if (Math.abs(shift) < 0.002) return;
-  if (deck.playing) deck.fadeSwap(() => deck.seek(deck.position + shift));
-  else deck.seek(deck.pausedPos + shift);
+  deck.shiftBy(shift);
 }
 
 // Sync lock: decks synced together stay tempo-locked. Move any one's tempo and the
@@ -662,6 +661,15 @@ function followTempo(name) {
   }
   following = false;
 }
+
+// Phase lock: once a second, each synced deck checks its kicks against the deck it synced
+// to and bends itself back if it has drifted (see Deck.holdPhase).
+setInterval(() => {
+  for (const n of DECKS) {
+    const d = mixer.decks[n];
+    if (syncLinked.has(n) && d.syncLeader && syncLinked.has(d.syncLeader.name)) d.holdPhase();
+  }
+}, 1000);
 
 // Two BPMs 4:3 apart (112 vs 150) with no ½ / 1 / 2 match: one was read at ¾ of its real
 // tempo (a triplet feel fools the detector). Its grid still hits every third real beat, so
@@ -681,6 +689,7 @@ function doSync(name) {
     // Pressed again: unlock this deck (a lone remaining deck isn't linked to anything).
     syncLinked.delete(name);
     if (syncLinked.size < 2) syncLinked.clear();
+    for (const n of DECKS) if (!syncLinked.has(n)) mixer.decks[n].syncLeader = null;
     return renderSyncLights();
   }
   const deck = mixer.decks[name];
@@ -869,7 +878,7 @@ function scaleBpm(name, k) {
   if (!t?.bpm) return;
   const bpm = Math.round(t.bpm * k * 100) / 100;
   if (bpm < 40 || bpm > 300) return;
-  saveTrack(t, { bpm });
+  saveTrack(t, { bpm, gridManual: true });
   renderTempo(name);
   renderLibrary();
 }
@@ -880,14 +889,14 @@ function beatHere(name) {
   if (!t?.bpm) return toast('Set a BPM first (TAP along with the beat).');
   const period = 60 / t.bpm;
   const offset = ((deck.position % period) + period) % period;
-  saveTrack(t, { beatOffset: offset, downbeat: offset });
+  saveTrack(t, { beatOffset: offset, downbeat: offset, gridManual: true });
   toast(`Deck ${name}: the playhead is now beat 1 of the bar.`);
 }
 
 function cycleMeter(name) {
   const t = mixer.decks[name].track;
   if (!t?.bpm) return;
-  saveTrack(t, { beatsPerBar: (t.beatsPerBar || 4) === 4 ? 3 : 4 });
+  saveTrack(t, { beatsPerBar: (t.beatsPerBar || 4) === 4 ? 3 : 4, gridManual: true });
   renderTempo(name);
 }
 
@@ -916,7 +925,7 @@ function setupTap(name) {
       const offset = ((deck.position % period) + period) % period;
       // Taps mark beats, not beat 1: keep the old bar start, moved onto the nearest new beat.
       const old = deck.track.downbeat ?? offset;
-      saveTrack(deck.track, { bpm, beatOffset: offset, downbeat: offset + Math.round((old - offset) / period) * period });
+      saveTrack(deck.track, { bpm, beatOffset: offset, downbeat: offset + Math.round((old - offset) / period) * period, gridManual: true });
       renderTempo(name);
       renderLibrary();
     }
@@ -949,7 +958,9 @@ async function loadToDeck(name, trackId) {
 
     const patch = {};
     if (!track.duration) patch.duration = buffer.duration;
-    if (track.bpm == null) {
+    // Analyse new tracks, and re-analyse ones gridded by an older detector unless the grid was set by hand.
+    const regrid = track.bpm == null || (!track.gridManual && (track.gridVersion || 1) < GRID_VERSION);
+    if (regrid) {
       d.artist.textContent = 'Analyzing tempo…';
       await new Promise((r) => setTimeout(r, 0));
       const tempo = detectTempo(mono, buffer.sampleRate);
@@ -959,10 +970,11 @@ async function loadToDeck(name, trackId) {
       } else {
         patch.bpm = 0; // analysed, no clear beat
       }
+      patch.gridVersion = GRID_VERSION;
     }
     const bpm = patch.bpm ?? track.bpm;
     const beatOffset = patch.beatOffset ?? track.beatOffset;
-    if (track.beatsPerBar == null && bpm && beatOffset != null) {
+    if ((regrid || track.beatsPerBar == null) && bpm && beatOffset != null) {
       d.artist.textContent = 'Finding the bars…';
       await new Promise((r) => setTimeout(r, 0));
       const meter = detectMeter(mono, buffer.sampleRate, bpm, beatOffset);
@@ -984,6 +996,11 @@ async function loadToDeck(name, trackId) {
     // A fresh load starts at normal speed; keep the slider in step.
     d.tempo.value = 0;
     deck.setRate(1);
+    // Kick envelope for audio-based sync (lines the kicks up, not just the grids). After the
+    // load so the deck is ready at once; Sync falls back to the grids until it's there.
+    setTimeout(() => {
+      if (deck.track === track) deck.kicks = kickEnvelope(mono, buffer.sampleRate);
+    }, 0);
     prepareAiStems(name, track, buffer); // background; DSP stems work meanwhile
   } catch (err) {
     console.error(err);

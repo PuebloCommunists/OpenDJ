@@ -4,8 +4,16 @@
 // (key shift / key lock / stems) before its EQ.
 
 import SignalsmithStretch from './lib/SignalsmithStretch.mjs';
+import { alignOnsets } from './analysis.js';
 
 const dbToGain = (db) => Math.pow(10, db / 20);
+
+// Starts, jumps, pauses and tempo changes are scheduled this far ahead of the audio
+// clock (plus the output's own buffer), so they happen at exactly the time the
+// position math assumes. Scheduled at "now", they land whenever the audio thread
+// next picks them up, 0–20 ms late and different every time, which left synced
+// decks a few milliseconds to tens of milliseconds apart.
+const LOOKAHEAD = 0.03;
 
 export const XF_SIDE = { A: 'L', C: 'L', B: 'R', D: 'R' }; // crossfader side per deck
 
@@ -303,7 +311,7 @@ export class Deck {
       this.stretchOn = on;
       this.lead = on ? this.stretchLatency : 0;
       this.sendFx();
-      if (this.playing) this.startSource(this.position); // re-anchor for the new delay
+      if (this.playing) this.restartInPlace(); // re-anchor for the new delay
     };
     if (this.playing) this.fadeSwap(swap);
     else swap();
@@ -321,7 +329,7 @@ export class Deck {
     this.aiStems = buffers;
     this.applyAiGains();
     this.sendFx();
-    if (this.playing) this.startSource(this.position);
+    if (this.playing) this.restartInPlace();
     this.emit('stems');
   }
 
@@ -394,13 +402,41 @@ export class Deck {
   }
 
   get position() {
+    return this.posAt(this.ctx.currentTime);
+  }
+
+  /** Track position at context time `t` (a little ahead of now is fine: playback is linear). */
+  posAt(t) {
     if (!this.playing) return this.pausedPos;
-    let pos = this.startPos + (this.ctx.currentTime - this.startTime) * this.rate;
+    let pos = this.startPos + (t - this.startTime) * this.rate;
     if (this.loop && pos >= this.loop.end) {
       const len = this.loop.end - this.loop.start;
       pos = this.loop.start + ((pos - this.loop.start) % len);
     }
-    return Math.min(pos, this.duration);
+    return Math.max(0, Math.min(pos, this.duration));
+  }
+
+  /** Context time at which a change made now really takes effect (see LOOKAHEAD). */
+  get changeTime() {
+    return this.ctx.currentTime + LOOKAHEAD + (this.ctx.baseLatency || 0);
+  }
+
+  /** Restart the sources where playback will be anyway (new buffers or routing), without a jump. */
+  restartInPlace() {
+    const when = this.changeTime;
+    this.startSource(this.posAt(when), when);
+  }
+
+  /** Move a playing (or paused) deck by `dt` track seconds relative to where it is. */
+  shiftBy(dt) {
+    if (!this.buffer) return;
+    if (!this.playing) return this.seek(this.pausedPos + dt);
+    const when = this.changeTime;
+    let to = this.posAt(when) + dt;
+    if (this.loop && (to < this.loop.start || to >= this.loop.end)) this.loop = null;
+    to = Math.max(0, Math.min(to, this.duration));
+    this.startSource(to, when);
+    this.emit('seek');
   }
 
   load(buffer, track) {
@@ -410,6 +446,9 @@ export class Deck {
     this.playing = false;
     this.pausedPos = 0;
     this.cuePoint = track.beatOffset && track.beatOffset < 2 ? track.beatOffset : 0;
+    this.kicks = null; // kick envelope for audio-based sync, set once it's computed
+    this.syncLeader = null;
+    this.lastDrift = null;
     this.loop = null;
     // A new track starts in its own key with every stem on; key lock is a deck setting and stays.
     this.keyShift = 0;
@@ -433,14 +472,34 @@ export class Deck {
     this.source = null;
   }
 
-  startSource(at) {
+  /** Let the running sources play on until `when`, then stop: the next ones take over seamlessly. */
+  retireSources(when) {
+    for (const s of this.sources) {
+      s.onended = () => s.disconnect();
+      try {
+        s.stop(when);
+      } catch {}
+    }
+    this.sources = [];
+    this.source = null;
+  }
+
+  /** Play from track position `at`, starting at context time `when` (default: the next change time). */
+  startSource(at, when = this.changeTime) {
     queueMicrotask(() => this.fxChain.syncGate());
-    this.stopSource();
+    if (this.sources.length) {
+      // A jump: dip for ~10 ms around the switch so the cut doesn't click.
+      const g = this.bus.gain;
+      g.cancelScheduledValues(when - 0.005);
+      g.setValueAtTime(1, when - 0.005);
+      g.linearRampToValueAtTime(0.0001, when);
+      g.linearRampToValueAtTime(1, when + 0.006);
+    }
+    this.retireSources(when);
     // One source for the mixed track, or four (one per AI stem) started together.
     const plan = this.aiStems
       ? AI_STEM_NAMES.map((n) => [this.aiStems[n], this.aiGains[n]])
       : [[this.buffer, this.input]];
-    const when = this.ctx.currentTime;
     // Read ahead by the stretcher's delay (lead = 0 without it); inside a loop, wrap into it.
     let offset = at + (this.lead || 0) * this.rate;
     if (this.loop && offset >= this.loop.end) offset = this.loop.start + ((offset - this.loop.start) % (this.loop.end - this.loop.start));
@@ -483,8 +542,9 @@ export class Deck {
 
   pause() {
     if (!this.playing) return;
-    this.pausedPos = this.position;
-    this.stopSource();
+    const when = this.changeTime;
+    this.pausedPos = this.posAt(when);
+    this.retireSources(when);
     this.playing = false;
     this.emit('state');
   }
@@ -517,16 +577,17 @@ export class Deck {
   }
 
   setRate(rate, { silent = false } = {}) {
+    const when = this.changeTime;
     if (this.playing) {
-      // Rebase so position math stays continuous.
-      const pos = this.position;
+      // Rebase at the moment the new rate takes effect, so position math stays exact.
+      const pos = this.posAt(when);
       this.startPos = pos;
-      this.startTime = this.ctx.currentTime;
+      this.startTime = when;
       if (this.loop && pos < this.loop.start) this.loop = null;
     }
     this.rate = rate;
     queueMicrotask(() => this.fxChain.syncGate());
-    for (const s of this.sources) s.playbackRate.setValueAtTime(rate, this.ctx.currentTime);
+    for (const s of this.sources) s.playbackRate.setValueAtTime(rate, when);
     if (this.keyLock) this.sendFx(); // pitch correction follows the tempo
     if (!silent) this.emit('rate');
   }
@@ -657,15 +718,23 @@ export class Deck {
   /**
    * Match tempo, then line up the grids: whole bars (beat 1 on beat 1) when both
    * decks are in the same time signature at the same tempo octave, beats otherwise.
+   * Then fine-tune from the audio: the grids put the beats within a few ms at best,
+   * and a grid that's off (or two kicks with different attacks) is still audible,
+   * so this deck moves until its kicks really land on the other deck's.
    */
   syncTo(other) {
     const target = this.matchTempo(other);
     if (!target) return false;
+    this.syncLeader = other;
 
     const mine = this.bars;
     const theirs = other.bars;
     if (mine && theirs && other.bpm) {
-      const scale = target / other.effectiveBpm; // 1, 2 or 0.5
+      // Measure both decks at the moment the jump will land, so neither moves in between.
+      const when = this.changeTime;
+      const posMe = this.posAt(when);
+      const posOther = other.posAt(when);
+      const scale = target / other.effectiveBpm; // 1, 2 or 0.5 (times the Sync ratio)
       // Unit = one bar when the bars can match, one beat otherwise.
       const byBar = scale === 1 && mine.beatsPerBar === theirs.beatsPerBar;
       const unitMe = (60 / this.bpm) * (byBar ? mine.beatsPerBar : 1);
@@ -673,21 +742,27 @@ export class Deck {
       const refMe = byBar ? mine.downbeat : this.track.beatOffset;
       const refOther = byBar ? theirs.downbeat : other.track.beatOffset;
       // Express the other deck's position on this deck's grid.
-      const phaseOther = frac(((other.position - refOther) / unitOther) * (byBar ? 1 : scale));
-      const phaseMe = frac((this.position - refMe) / unitMe);
+      const phaseOther = frac(((posOther - refOther) / unitOther) * (byBar ? 1 : scale));
+      const phaseMe = frac((posMe - refMe) / unitMe);
       let diff = phaseOther - phaseMe;
       if (diff > 0.5) diff -= 1;
       if (diff < -0.5) diff += 1;
-      const shift = diff * unitMe;
+      let to = posMe + diff * unitMe;
+      // Fine alignment from the audio (skipped when there's too little shared rhythm to tell).
+      // (Not against a looping deck: its audio doesn't run straight ahead.)
+      const fine = this.kicks && other.kicks && !other.loop
+        ? alignOnsets(other.kicks, posOther, other.rate, this.kicks, to, this.rate, { maxShift: Math.min(0.05, 60 / this.bpm / 8) })
+        : null;
+      if (fine) to += fine.shift;
       this.lastSync = byBar ? 'bar' : 'beat';
-      if (Math.abs(shift) > 0.002) {
-        // Near the start of a track a backwards shift would land before 0:00 and get clamped,
-        // leaving the decks out of step. Go forward whole units instead: same alignment, reachable.
-        let to = this.position + shift;
-        while (to < 0) to += unitMe;
+      this.lastFine = fine;
+      // Near the start of a track a backwards jump would land before 0:00 and get clamped,
+      // leaving the decks out of step. Go forward whole units instead: same alignment, reachable.
+      while (to < 0) to += unitMe;
+      if (Math.abs(to - posMe) > 0.0005) {
         if (this.playing) {
           this.loop = null;
-          this.startSource(to);
+          this.startSource(to, when);
         } else {
           this.pausedPos = to;
         }
@@ -695,6 +770,40 @@ export class Deck {
     }
     this.emit('sync');
     return true;
+  }
+
+  /**
+   * Keep a synced deck locked to the deck it synced to: look at where both decks' kicks
+   * fall over the next few seconds and, if this one has drifted (a tempo that's a hair
+   * off, a live drummer, a grid that's slightly wrong), bend it back smoothly — like a
+   * DJ's hand on the platter, at most ±0.3 % speed. Returns the correction in ms, or 0.
+   */
+  holdPhase() {
+    const lead = this.syncLeader;
+    if (!lead || !this.playing || !lead.playing || this.scratching || this._baseRate != null || this.holding) return 0;
+    if (this.loop || lead.loop) return 0; // a looping deck's audio doesn't run straight ahead
+    if (!this.kicks || !lead.kicks) return 0;
+    const when = this.changeTime;
+    const fine = alignOnsets(lead.kicks, lead.posAt(when), lead.rate, this.kicks, this.posAt(when), this.rate, {
+      span: 4,
+      maxShift: Math.min(0.03, 60 / (this.bpm || 120) / 8),
+      minConfidence: 0.4,
+    });
+    // Act only on a drift seen twice in a row (one odd fill shouldn't move the deck).
+    const seen = this.lastDrift;
+    this.lastDrift = fine?.shift ?? null;
+    if (!fine || seen == null || Math.abs(fine.shift - seen) > 0.003 || Math.abs(fine.shift) < 0.003) return 0;
+    const base = this.rate;
+    const dur = Math.max(1, Math.abs(fine.shift) / (0.003 * base)); // seconds of bend
+    const bent = base * (1 + fine.shift / (base * dur));
+    this.holding = true;
+    this.lastDrift = null;
+    this.setRate(bent, { silent: true });
+    setTimeout(() => {
+      this.holding = false;
+      if (this.rate === bent) this.setRate(base, { silent: true }); // unless the tempo moved meanwhile
+    }, dur * 1000);
+    return fine.shift * 1000;
   }
 
   setEq(band, db) {

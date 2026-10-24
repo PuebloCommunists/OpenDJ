@@ -67,50 +67,70 @@ export function overview(wave, columns) {
 
 const TARGET_ENV_RATE = 200; // onset envelope frames per second (approx.)
 
-/** Onset-strength envelope: rectified rise in log energy, emphasising low end (kicks). */
+/**
+ * Onset-strength envelope: rectified rise in log energy, emphasising low end (kicks).
+ * Also returns two band envelopes used to tell kicks from offbeat bass and hats:
+ * `low` (below ~150 Hz) and `mid` (~150–2500 Hz). A kick rises in both at once.
+ */
 export function onsetEnvelope(mono, sampleRate) {
   const hop = Math.round(sampleRate / TARGET_ENV_RATE);
   const ENV_RATE = sampleRate / hop;
   const frames = Math.floor(mono.length / hop);
   const env = new Float32Array(frames);
+  const lowEnv = new Float32Array(frames);
+  const midEnv = new Float32Array(frames);
   const aLow = 1 - Math.exp((-2 * Math.PI * 150) / sampleRate);
+  const aMid = 1 - Math.exp((-2 * Math.PI * 2500) / sampleRate);
   const aHigh = 1 - Math.exp((-2 * Math.PI * 4000) / sampleRate);
   let lp = 0;
+  let lpM = 0;
   let lpH = 0;
   let prevLow = 0;
+  let prevMid = 0;
   let prevAll = 0;
   for (let f = 0; f < frames; f++) {
     let eLow = 0;
+    let eMid = 0;
     let eHigh = 0;
     const start = f * hop;
     for (let i = start; i < start + hop; i++) {
       const s = mono[i];
       lp += aLow * (s - lp);
+      lpM += aMid * (s - lpM);
       lpH += aHigh * (s - lpH);
+      const m = lpM - lp;
       const h = s - lpH;
       eLow += lp * lp;
+      eMid += m * m;
       eHigh += h * h;
     }
     const logLow = Math.log1p(1000 * eLow / hop);
+    const logMid = Math.log1p(1000 * eMid / hop);
     const logHigh = Math.log1p(1000 * eHigh / hop);
     const dLow = logLow - prevLow;
+    const dMid = logMid - prevMid;
     const dHigh = logHigh - prevAll;
     env[f] = (dLow > 0 ? dLow : 0) * 1.0 + (dHigh > 0 ? dHigh : 0) * 0.5;
+    lowEnv[f] = dLow > 0 ? dLow : 0;
+    midEnv[f] = dMid > 0 ? dMid : 0;
     prevLow = logLow;
+    prevMid = logMid;
     prevAll = logHigh;
   }
   // Remove slow trend so loud sections don't dominate.
   const win = Math.round(ENV_RATE); // 1 s moving average
-  const out = new Float32Array(frames);
-  let acc = 0;
-  for (let f = 0; f < frames; f++) {
-    acc += env[f];
-    if (f >= win) acc -= env[f - win];
-    const mean = acc / Math.min(f + 1, win);
-    const v = env[f] - mean;
-    out[f] = v > 0 ? v : 0;
-  }
-  return { env: out, rate: ENV_RATE };
+  const detrend = (e) => {
+    const out = new Float32Array(frames);
+    let acc = 0;
+    for (let f = 0; f < frames; f++) {
+      acc += e[f];
+      if (f >= win) acc -= e[f - win];
+      const v = e[f] - acc / Math.min(f + 1, win);
+      out[f] = v > 0 ? v : 0;
+    }
+    return out;
+  };
+  return { env: detrend(env), low: detrend(lowEnv), mid: detrend(midEnv), rate: ENV_RATE };
 }
 
 function sampleEnv(env, pos) {
@@ -168,6 +188,10 @@ function tempoPrior(bpm, width = 0.55) {
   return Math.exp(-0.5 * x * x);
 }
 
+// Bump when tempo / beat-grid detection changes: tracks analysed by an older version
+// (and not fixed by hand) are re-analysed the next time they load.
+export const GRID_VERSION = 2;
+
 /**
  * Detect tempo and the position of the first beat.
  * Returns { bpm, offset, confidence } where offset is in seconds (first beat at
@@ -215,11 +239,38 @@ export function detectTempo(mono, sampleRate, { minBpm = 70, maxBpm = 180 } = {}
     if (!best || weighted > best.weighted) best = { bpm, weighted, raw: r };
   }
   if (!best || best.raw <= 0) return null;
-  for (const factor of [2, 0.5]) {
-    const alt = best.bpm * factor;
-    if (alt < minBpm || alt > maxBpm) continue;
-    const r = raw(alt);
-    if (r * tempoPrior(alt, 0.55) > best.raw * tempoPrior(best.bpm, 0.55)) best = { bpm: alt, weighted: 0, raw: r };
+  const pickOctave = () => {
+    for (const factor of [2, 0.5]) {
+      const alt = best.bpm * factor;
+      if (alt < minBpm || alt > maxBpm) continue;
+      const r = raw(alt);
+      if (r * tempoPrior(alt, 0.55) > best.raw * tempoPrior(best.bpm, 0.55)) best = { bpm: alt, weighted: 0, raw: r };
+    }
+  };
+  pickOctave();
+
+  // Autocorrelation can lock onto a tempo 3:4 or 4:5 off the real one (a triplet or
+  // syncopated pattern repeats at that lag too). The real tempo's grid, with its half
+  // and quarter beats, catches nearly every hit; a related wrong tempo's grid misses
+  // many. Switch only when a related tempo explains the track clearly better.
+  const fitTo = Math.min(env.length, from + Math.floor(120 * ENV_RATE));
+  const gridFit = (bpm) =>
+    combScore(env, ENV_RATE, bpm, from, fitTo, 1).score +
+    0.5 * combScore(env, ENV_RATE, bpm * 2, from, fitTo, 1).score +
+    0.25 * combScore(env, ENV_RATE, bpm * 4, from, fitTo, 1).score;
+  const fit = gridFit(best.bpm);
+  let better = null;
+  for (const factor of [4 / 3, 3 / 4, 5 / 4, 4 / 5, 3 / 2, 2 / 3]) {
+    // Compare in the same octave band so the denser grid doesn't win just by being denser.
+    let alt = best.bpm * factor;
+    while (alt > maxBpm) alt /= 2;
+    while (alt < minBpm) alt *= 2;
+    const f = gridFit(alt);
+    if (f > 1.15 * fit && (!better || f > better.f)) better = { bpm: alt, f };
+  }
+  if (better) {
+    best = { bpm: better.bpm, weighted: 0, raw: raw(better.bpm) };
+    pickOctave();
   }
 
   // 3) Refine tempo and find the beat phase with a comb over a longer stretch.
@@ -237,20 +288,31 @@ export function detectTempo(mono, sampleRate, { minBpm = 70, maxBpm = 180 } = {}
   else bpm = Math.round(bpm * 100) / 100;
 
   // Find the beat phase: lock to the double-time grid first (so a half-time
-  // reading still lands on real beats), then pick which of its two phases is
-  // the stronger beat at the chosen tempo.
+  // reading still lands on real beats), then pick which of its two phases holds
+  // the kicks. Kicks rise in the low and mid bands together; offbeat bass is low
+  // only and hats are high only, so sqrt(low × mid) tells them apart where the
+  // plain envelope would put the grid on a strong offbeat.
   const halfPeriodFrames = (30 * ENV_RATE) / bpm;
   const dbl = combScore(env, ENV_RATE, bpm * 2, from, fineTo, 0.25).phase;
-  const scoreAt = (ph) => {
+  const peak = (e, p) => {
+    const i = Math.round(p);
+    return i < 1 || i + 1 >= e.length ? 0 : Math.max(e[i - 1], e[i], e[i + 1]);
+  };
+  const scoreAt = (ph, kick) => {
     let sum = 0;
     let n = 0;
     for (let p = ph; p < fineTo; p += 2 * halfPeriodFrames) {
-      sum += sampleEnv(env, p);
+      sum += kick ? Math.sqrt(peak(onset.low, p) * peak(onset.mid, p)) : sampleEnv(env, p);
       n++;
     }
     return n ? sum / n : 0;
   };
-  const finalPhase = scoreAt(dbl) >= scoreAt(dbl + halfPeriodFrames) ? dbl : dbl + halfPeriodFrames;
+  const k0 = scoreAt(dbl, true);
+  const k1 = scoreAt(dbl + halfPeriodFrames, true);
+  const finalPhase =
+    Math.abs(k0 - k1) > 0.03 * Math.max(k0, k1)
+      ? (k0 > k1 ? dbl : dbl + halfPeriodFrames)
+      : scoreAt(dbl, false) >= scoreAt(dbl + halfPeriodFrames, false) ? dbl : dbl + halfPeriodFrames;
   const period = 60 / bpm;
   let offset = finalPhase / ENV_RATE;
   offset = ((offset % period) + period) % period;
@@ -262,6 +324,67 @@ export function detectTempo(mono, sampleRate, { minBpm = 70, maxBpm = 180 } = {}
   const confidence = mean > 0 ? Math.max(0, Math.min(1, (fine.score / mean - 1) / 3)) : 0;
 
   return { bpm, offset, confidence };
+}
+
+/**
+ * Kick envelope for audio-based sync: sqrt(low × mid) onset strength, lightly
+ * smoothed. High where a kick (or a snare's body) starts, low on offbeat bass and hats.
+ */
+export function kickEnvelope(mono, sampleRate) {
+  const o = onsetEnvelope(mono, sampleRate);
+  const k = new Float32Array(o.low.length);
+  for (let i = 0; i < k.length; i++) k[i] = Math.sqrt(o.low[i] * o.mid[i]);
+  return { env: smooth(k, 1), rate: o.rate };
+}
+
+/**
+ * Line two decks up from their audio rather than their beat grids: how many
+ * seconds of B's track time B should move so its kicks land on A's over the next
+ * `span` seconds of real time, searching ±maxShift. a, b: kickEnvelope()s; pos*:
+ * track positions at the same moment; speed*: playback rates.
+ * Returns { shift, confidence } (confidence = correlation 0..1), or null when that
+ * stretch has too little shared rhythm to tell (a breakdown, an intro).
+ */
+export function alignOnsets(a, posA, speedA, b, posB, speedB, { span = 6, maxShift = 0.05, minConfidence = 0.25 } = {}) {
+  const dt = 1 / 200;
+  const n = Math.floor(span / dt);
+  const ea = new Float32Array(n);
+  let sa = 0;
+  let saa = 0;
+  for (let i = 0; i < n; i++) {
+    const v = sampleEnv(a.env, (posA + i * dt * speedA) * a.rate);
+    ea[i] = v;
+    sa += v;
+    saa += v * v;
+  }
+  const va = saa - (sa * sa) / n;
+  if (va <= 1e-9) return null;
+  const lagStep = 0.001;
+  const L = Math.max(1, Math.round(maxShift / lagStep));
+  const r = new Float32Array(2 * L + 1);
+  for (let j = -L; j <= L; j++) {
+    let sab = 0;
+    let sb = 0;
+    let sbb = 0;
+    const start = posB + j * lagStep;
+    for (let i = 0; i < n; i++) {
+      const v = sampleEnv(b.env, (start + i * dt * speedB) * b.rate);
+      sab += ea[i] * v;
+      sb += v;
+      sbb += v * v;
+    }
+    const vb = sbb - (sb * sb) / n;
+    r[j + L] = vb > 1e-9 ? (sab - (sa * sb) / n) / Math.sqrt(va * vb) : 0;
+  }
+  let best = 0;
+  for (let i = 1; i < r.length; i++) if (r[i] > r[best]) best = i;
+  if (best === 0 || best === r.length - 1 || r[best] < minConfidence) return null; // no peak inside the window
+  const y0 = r[best - 1];
+  const y1 = r[best];
+  const y2 = r[best + 1];
+  const den = y0 - 2 * y1 + y2;
+  const frac = den < 0 ? (0.5 * (y0 - y2)) / den : 0;
+  return { shift: (best - L + frac) * lagStep, confidence: y1 };
 }
 
 // ------------------------------------------------------------------ key
