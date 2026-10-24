@@ -553,3 +553,33 @@ export function beatPhase(position, bpm, offset) {
   const p = (position - offset) / period;
   return p - Math.floor(p);
 }
+
+/**
+ * How much more the audio supports 4⁄3 × bpm than bpm itself (> 1: the faster one).
+ * Uses the onset envelope's autocorrelation with its average removed, which tells
+ * metrical levels apart much better than the raw one: a triplet feel can make the
+ * detector read ¾ of the real tempo, and this is the check for that.
+ */
+export function threeFourSupport(mono, sampleRate, bpm) {
+  const onset = onsetEnvelope(mono, sampleRate);
+  const R = onset.rate;
+  const env = smooth(onset.env, 2);
+  const duration = mono.length / sampleRate;
+  const from = Math.floor(Math.min(30, duration * 0.15) * R);
+  const to = Math.min(env.length, from + Math.floor(90 * R));
+  let mean = 0;
+  for (let f = from; f < to; f++) mean += env[f];
+  mean /= Math.max(1, to - from);
+  const ac = (lag) => {
+    const i = Math.round(lag);
+    let s = 0;
+    for (let f = from; f + i < to; f++) s += (env[f] - mean) * (env[f + i] - mean);
+    return s / Math.max(1, to - from - i);
+  };
+  const score = (b) => {
+    const lag = (60 * R) / b;
+    return ac(lag) + ac(2 * lag) + ac(4 * lag);
+  };
+  const base = score(bpm);
+  return base > 0 ? score((bpm * 4) / 3) / base : 2;
+}
