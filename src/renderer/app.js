@@ -1,7 +1,7 @@
 // Commons DJ — UI
 import { Mixer, peakDb, STEMS, AI_STEM_NAMES, XF_SIDE } from './engine.js';
 import { SOUNDS } from './sfx.js';
-import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey, kickEnvelope, GRID_VERSION } from './analysis.js';
+import { mixToMono, computeWaveform, overview, detectTempo, detectMeter, detectKey, keyName, camelot, transposeKey, kickEnvelope, GRID_VERSION, threeFourSupport } from './analysis.js';
 
 const api = window.cdj;
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -671,17 +671,31 @@ setInterval(() => {
   }
 }, 1000);
 
-// Two BPMs 4:3 apart (112 vs 150) with no ½ / 1 / 2 match: one was read at ¾ of its real
-// tempo (a triplet feel fools the detector). Its grid still hits every third real beat, so
-// scaling the slower one by 4⁄3 fills in the beats; then the sync can match them 1:1.
+// A triplet feel can make the detector read a track at ¾ of its real tempo (Ice at 112
+// instead of 150, I Knew You Were Trouble at 115 instead of 154). Its grid still hits every
+// third real beat, so scaling it by 4⁄3 fills in the beats. On Sync, when the decks only
+// line up within reach if one of them is ×4⁄3, and the audio backs that, fix it first.
+const threeFourCache = new Map(); // track id → support for ×4⁄3
 function fixThreeFour(a, b) {
-  const near = (x, y, tol) => [1, 2, 0.5].some((m) => Math.abs((x * m) / y - 1) < tol);
-  if (near(a.bpm, b.bpm, 0.08)) return;
-  const [slow, fast] = a.bpm < b.bpm ? [a, b] : [b, a];
-  if (!near((slow.bpm * 4) / 3, fast.bpm, 0.02)) return;
-  const was = slow.bpm;
-  scaleBpm(slow.name, 4 / 3);
-  toast(`Deck ${slow.name} was read at ¾ of its tempo: ${was} → ${slow.bpm} BPM.`);
+  const off = (x, y) => Math.min(...[1, 2, 0.5].map((m) => Math.abs(Math.log((x * m) / y)))); // tempo gap, any octave
+  if (off(a.bpm, b.bpm) < Math.log(1.15)) return; // reachable as they are
+  const support = (d) => {
+    if (!threeFourCache.has(d.track.id)) {
+      const ch = [];
+      for (let c = 0; c < d.buffer.numberOfChannels; c++) ch.push(d.buffer.getChannelData(c));
+      threeFourCache.set(d.track.id, threeFourSupport(mixToMono(ch), d.buffer.sampleRate, d.bpm));
+    }
+    return threeFourCache.get(d.track.id);
+  };
+  const fits = [a, b].filter((d) => off((d.bpm * 4) / 3, (d === a ? b : a).bpm) < Math.log(1.1));
+  if (!fits.length) return;
+  // Only one way to line them up: take it. Both: the one the audio backs more.
+  const fix = fits.length === 1 ? fits[0] : fits.reduce((x, y) => (support(y) > support(x) ? y : x));
+  if (fits.length > 1 && support(fix) < 1) return;
+  const was = fix.bpm;
+  scaleBpm(fix.name, 4 / 3);
+  threeFourCache.delete(fix.track.id);
+  toast(`Deck ${fix.name} was read at ¾ of its tempo: ${was} → ${fix.bpm} BPM.`);
 }
 
 function doSync(name) {
